@@ -1,3 +1,7 @@
+> **Fork notice**
+>
+> This repository is a fork of the official [Atoll repository (Ebullioscopic/Atoll)](https://github.com/Ebullioscopic/Atoll). It contains modifications for personal use.
+
 <p align="center">
   <img src=".github/assets/atoll-logo.png" alt="Atoll logo" width="120">
 </p>
