@@ -52,6 +52,7 @@ struct ContentView: View {
     @ObservedObject var capsLockManager = CapsLockManager.shared
     @ObservedObject var extensionLiveActivityManager = ExtensionLiveActivityManager.shared
     @ObservedObject var extensionNotchExperienceManager = ExtensionNotchExperienceManager.shared
+    @ObservedObject var extensionAuthorizationManager = ExtensionAuthorizationManager.shared
     @ObservedObject var localSendService = LocalSendService.shared
     @State private var downloadManager = DownloadManager.shared
     @ObservedObject var shelfState = ShelfStateViewModel.shared
@@ -79,7 +80,6 @@ struct ContentView: View {
     @Default(.showDoNotDisturbIndicator) var showDoNotDisturbIndicator
     @Default(.enableScreenRecordingDetection) var enableScreenRecordingDetection
     @Default(.enableCapsLockIndicator) var enableCapsLockIndicator
-    @Default(.enableExtensionLiveActivities) var enableExtensionLiveActivities
     @Default(.showStandardMediaControls) var showStandardMediaControls
     @Default(.externalDisplayStyle) var externalDisplayStyle
     @Default(.hideNonNotchUntilHover) var hideNonNotchUntilHover
@@ -1620,6 +1620,7 @@ struct ContentView: View {
     }
 
     private func resolvedExtensionMusicPayload() -> ExtensionLiveActivityPayload? {
+        guard extensionAuthorizationManager.isExtensionsFeatureEnabled else { return nil }
         let candidates = extensionLiveActivityManager.sortedActivities(for: true)
         guard let payload = candidates.first else {
             ExtensionRoutingDiagnostics.shared.logSuppression(
@@ -1631,7 +1632,7 @@ struct ContentView: View {
             return nil
         }
 
-        guard enableExtensionLiveActivities else {
+        guard extensionAuthorizationManager.areLiveActivitiesEnabled else {
             ExtensionRoutingDiagnostics.shared.logSuppression(
                 .music,
                 reason: "feature toggle disabled",
@@ -1699,6 +1700,7 @@ struct ContentView: View {
     }
 
     private func resolvedExtensionStandalonePayload(excluding musicPayloadID: String?) -> ExtensionLiveActivityPayload? {
+        guard extensionAuthorizationManager.isExtensionsFeatureEnabled else { return nil }
         let baseCandidates = extensionLiveActivityManager.sortedActivities()
         guard !baseCandidates.isEmpty else {
             ExtensionRoutingDiagnostics.shared.logSuppression(
@@ -1729,7 +1731,7 @@ struct ContentView: View {
             return nil
         }
 
-        guard enableExtensionLiveActivities else {
+        guard extensionAuthorizationManager.areLiveActivitiesEnabled else {
             ExtensionRoutingDiagnostics.shared.logSuppression(
                 .standalone,
                 reason: "feature toggle disabled",
@@ -2189,9 +2191,9 @@ struct ContentView: View {
     }
 
     private func currentExtensionTabPayload() -> ExtensionNotchExperiencePayload? {
-        guard Defaults[.enableThirdPartyExtensions],
-              Defaults[.enableExtensionNotchExperiences],
-              Defaults[.enableExtensionNotchTabs] else {
+        guard extensionAuthorizationManager.isExtensionsFeatureEnabled,
+              extensionAuthorizationManager.areNotchExperiencesEnabled,
+              extensionAuthorizationManager.areNotchTabsEnabled else {
             return nil
         }
         if let selectedID = coordinator.selectedExtensionExperienceID,

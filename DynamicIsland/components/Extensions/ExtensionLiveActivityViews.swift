@@ -183,13 +183,14 @@ private func logExtensionDiagnostics(_ message: String) {
 struct ExtensionNotchExperienceTabView: View {
     let payload: ExtensionNotchExperiencePayload
 
-    @Default(.enableExtensionNotchInteractiveWebViews) private var interactiveWebViewsEnabled
+    @ObservedObject private var authorizationManager = ExtensionAuthorizationManager.shared
 
     private var descriptor: AtollNotchExperienceDescriptor { payload.descriptor }
     private var tabConfiguration: AtollNotchExperienceDescriptor.TabConfiguration? { descriptor.tab }
     private var accentColor: Color { descriptor.accentColor.swiftUIColor }
     private var allowInteractiveWebViews: Bool {
-        interactiveWebViewsEnabled && (tabConfiguration?.allowWebInteraction ?? false)
+        authorizationManager.areNotchInteractiveWebViewsEnabled
+            && (tabConfiguration?.allowWebInteraction ?? false)
     }
 
     var body: some View {
@@ -345,7 +346,7 @@ struct ExtensionMinimalisticExperienceView: View {
     let payload: ExtensionNotchExperiencePayload
     let albumArtNamespace: Namespace.ID
 
-    @Default(.enableExtensionNotchInteractiveWebViews) private var interactiveWebViewsEnabled
+    @ObservedObject private var authorizationManager = ExtensionAuthorizationManager.shared
 
     private var descriptor: AtollNotchExperienceDescriptor { payload.descriptor }
     private var configuration: AtollNotchExperienceDescriptor.MinimalisticConfiguration? { descriptor.minimalistic }
@@ -371,14 +372,14 @@ struct ExtensionMinimalisticExperienceView: View {
                             ExtensionNotchSectionView(
                                 section: section,
                                 accent: accent,
-                                allowWebInteraction: interactiveWebViewsEnabled
+                                allowWebInteraction: authorizationManager.areNotchInteractiveWebViewsEnabled
                             )
                             .accessibilityIdentifier("extension-minimalistic-section-\(payload.descriptor.id)-\(index)")
                         }
                         if let webDescriptor = configuration.webContent {
                             ExtensionWebContentView(
                                 descriptor: webDescriptor,
-                                allowInteraction: interactiveWebViewsEnabled
+                                allowInteraction: authorizationManager.areNotchInteractiveWebViewsEnabled
                             )
                             .frame(height: webDescriptor.preferredHeight)
                             .frame(maxWidth: webDescriptor.maximumContentWidth ?? .infinity)

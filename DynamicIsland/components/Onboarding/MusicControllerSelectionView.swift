@@ -28,12 +28,17 @@ struct MusicControllerSelectionView: View {
     let onContinue: () -> Void
 
     @Default(.mediaController) var mediaController
+    @State private var allowBundledMediaRemoteAdapter = MediaRemoteExecutionPolicy.isUserConsentEnabled()
     
     private var availableMediaControllers: [MediaControllerType] {
-        if MusicManager.shared.isNowPlayingDeprecated {
-            return MediaControllerType.allCases.filter { $0 != .nowPlaying }
-        } else {
-            return MediaControllerType.allCases
+        MediaControllerType.allCases.filter { controller in
+            if controller.requiresBundledMediaRemoteAdapter && !allowBundledMediaRemoteAdapter {
+                return false
+            }
+            if controller.requiresBundledMediaRemoteAdapter && MusicManager.shared.isNowPlayingDeprecated {
+                return false
+            }
+            return true
         }
     }
     
@@ -51,6 +56,14 @@ struct MusicControllerSelectionView: View {
                 .font(.body)
                 .foregroundColor(.secondary)
                 .padding(.horizontal)
+
+            if !allowBundledMediaRemoteAdapter {
+                Text("Now Playing, Amazon Music, and Cider can be enabled later from Media settings after reviewing the bundled compatibility adapter warning.")
+                    .multilineTextAlignment(.center)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            }
 
             ScrollView {
                 VStack(spacing: 12) {
@@ -86,6 +99,9 @@ struct MusicControllerSelectionView: View {
             VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow)
                 .ignoresSafeArea()
         )
+        .onAppear {
+            allowBundledMediaRemoteAdapter = MediaRemoteExecutionPolicy.isUserConsentEnabled()
+        }
     }
 }
 

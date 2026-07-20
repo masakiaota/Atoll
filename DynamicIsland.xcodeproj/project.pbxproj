@@ -32,18 +32,6 @@
 		F910B9C812C7AEFE2293F7D2 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4A9C58195E197C19F691DA62 /* Cocoa.framework */; };
 /* End PBXBuildFile section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		7EA69B1B2F5AE13500EB2D16 /* CopyFiles */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 8;
-			dstPath = Contents/Helpers;
-			dstSubfolderSpec = 1;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 1;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXFileReference section */
 		4A9C58195E197C19F691DA62 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		54078F29304A9DBBEFBDF932 /* DynamicIslandUITests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DynamicIslandUITests.swift; sourceTree = "<group>"; };
@@ -66,13 +54,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		7EA69B1E2F5AE61200EB2D16 /* Exceptions for "Contents" folder in "DynamicIsland" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Helpers/NowPlayingTestClient,
-			);
-			target = F54406E62CD4987A00C7AFD9 /* DynamicIsland */;
-		};
 		7EA69B212F5B100000EB2D16 /* Exceptions for "DynamicIsland" folder in "DynamicIsland" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -82,29 +63,7 @@
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
-/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
-		7EA69B202F5AE63200EB2D16 /* Exceptions for "Contents" folder in "Copy Files" phase from "DynamicIsland" target */ = {
-			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
-			attributesByRelativePath = {
-				Helpers/NowPlayingTestClient = (CodeSignOnCopy, );
-			};
-			buildPhase = 7EA69B1B2F5AE13500EB2D16 /* CopyFiles */;
-			membershipExceptions = (
-				Helpers/NowPlayingTestClient,
-			);
-		};
-/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		7EA69B1C2F5AE15C00EB2D16 /* Contents */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				7EA69B1E2F5AE61200EB2D16 /* Exceptions for "Contents" folder in "DynamicIsland" target */,
-				7EA69B202F5AE63200EB2D16 /* Exceptions for "Contents" folder in "Copy Files" phase from "DynamicIsland" target */,
-			);
-			path = Contents;
-			sourceTree = "<group>";
-		};
 		F54406E92CD4987A00C7AFD9 /* DynamicIsland */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -203,7 +162,6 @@
 		F54406DE2CD4987A00C7AFD9 = {
 			isa = PBXGroup;
 			children = (
-				7EA69B1C2F5AE15C00EB2D16 /* Contents */,
 				7E8840D52E9A341F00C5CB8C /* LottieAnimations */,
 				7E81304F2E3FB42700E08F3F /* Frameworks */,
 				7E81303F2E3FB40500E08F3F /* mediaremote-adapter */,
@@ -249,7 +207,6 @@
 				F54406E32CD4987A00C7AFD9 /* Sources */,
 				F54406E42CD4987A00C7AFD9 /* Frameworks */,
 				F54406E52CD4987A00C7AFD9 /* Resources */,
-				7EA69B1B2F5AE13500EB2D16 /* CopyFiles */,
 				7EFAA8AA2F6F12F3000A99E8 /* ShellScript */,
 			);
 			buildRules = (
@@ -257,7 +214,6 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				7EA69B1C2F5AE15C00EB2D16 /* Contents */,
 				F54406E92CD4987A00C7AFD9 /* DynamicIsland */,
 			);
 			name = DynamicIsland;

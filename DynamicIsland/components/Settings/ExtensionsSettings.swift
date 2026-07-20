@@ -16,6 +16,8 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+import AppKit
+import CryptoKit
 import SwiftUI
 import Defaults
 import AtollExtensionKit
@@ -38,12 +40,27 @@ struct ExtensionsSettingsView: View {
             $0.appName.lowercased().contains(query)
         }
     }
+
+    private var extensionsEnabled: Bool {
+        authManager.isExtensionsFeatureEnabled
+    }
     
     var body: some View {
         Form {
+            if let securityError = authManager.securityPersistenceError {
+                Section {
+                    Label(securityError, systemImage: "exclamationmark.shield.fill")
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                } header: {
+                    Text("Security state not saved")
+                }
+            }
+
             globalTogglesSection
             
-            if authManager.isExtensionsFeatureEnabled {
+            if extensionsEnabled {
+                localRPCSection
                 authorizedAppsSection
             }
         }
@@ -51,8 +68,11 @@ struct ExtensionsSettingsView: View {
         .alert("Remove Extension", isPresented: $showingRemoveConfirmation, presenting: selectedEntry) { entry in
             Button("Cancel", role: .cancel) { }
             Button("Remove", role: .destructive) {
-                authManager.removeEntry(bundleIdentifier: entry.bundleIdentifier)
-                selectedEntry = nil
+                if authManager.removeEntry(bundleIdentifier: entry.bundleIdentifier) {
+                    dismissAllContent(for: entry.bundleIdentifier)
+                    notifyAuthorizationChange(for: entry.bundleIdentifier, isAuthorized: false)
+                    selectedEntry = nil
+                }
             }
         } message: { entry in
             Text("Remove \(entry.appName) from the authorized extensions list? This will dismiss all active live activities, lock screen widgets, and notch experiences from this app.")
@@ -61,26 +81,77 @@ struct ExtensionsSettingsView: View {
     
     private var globalTogglesSection: some View {
         Section {
-            Defaults.Toggle(String(localized:"Enable third-party extensions"), key: .enableThirdPartyExtensions)
+            Toggle(
+                String(localized: "Enable third-party extensions"),
+                isOn: Binding(
+                    get: { authManager.isExtensionsFeatureEnabled },
+                    set: { _ = authManager.updateFeatureToggles(extensionsEnabled: $0) }
+                )
+            )
                 .settingsHighlight(id: highlightID("Enable third-party extensions"))
             
-            if Defaults[.enableThirdPartyExtensions] {
-                Defaults.Toggle(String(localized:"Allow extension live activities"), key: .enableExtensionLiveActivities)
+            if extensionsEnabled {
+                Toggle(
+                    String(localized: "Allow extension live activities"),
+                    isOn: Binding(
+                        get: { authManager.areLiveActivitiesEnabled },
+                        set: { _ = authManager.updateFeatureToggles(liveActivitiesEnabled: $0) }
+                    )
+                )
                     .settingsHighlight(id: highlightID("Allow extension live activities"))
                 
-                                Defaults.Toggle(String(localized:"Allow extension lock screen widgets"), key: .enableExtensionLockScreenWidgets)
+                Toggle(
+                    String(localized: "Allow extension lock screen widgets"),
+                    isOn: Binding(
+                        get: { authManager.areLockScreenWidgetsEnabled },
+                        set: { _ = authManager.updateFeatureToggles(lockScreenWidgetsEnabled: $0) }
+                    )
+                )
                     .settingsHighlight(id: highlightID("Allow extension lock screen widgets"))
 
-                                                Defaults.Toggle(String(localized:"Allow extension notch experiences"), key: .enableExtensionNotchExperiences)
+                Toggle(
+                    String(localized: "Allow extension notch experiences"),
+                    isOn: Binding(
+                        get: { authManager.areNotchExperiencesEnabled },
+                        set: { _ = authManager.updateFeatureToggles(notchExperiencesEnabled: $0) }
+                    )
+                )
                     .settingsHighlight(id: highlightID("Allow extension notch experiences"))
 
-                if Defaults[.enableExtensionNotchExperiences] {
+                Toggle(
+                    String(localized: "Allow extensions to access Shelf files"),
+                    isOn: Binding(
+                        get: { authManager.isFileSharingEnabled },
+                        set: { _ = authManager.updateFeatureToggles(fileSharingEnabled: $0) }
+                    )
+                )
+                    .settingsHighlight(id: highlightID("Allow extension file sharing"))
+
+                if authManager.areNotchExperiencesEnabled {
                     VStack(alignment: .leading, spacing: 8) {
-                        Defaults.Toggle(String(localized:"Show extension tabs"), key: .enableExtensionNotchTabs)
+                        Toggle(
+                            String(localized: "Show extension tabs"),
+                            isOn: Binding(
+                                get: { authManager.areNotchTabsEnabled },
+                                set: { _ = authManager.updateFeatureToggles(notchTabsEnabled: $0) }
+                            )
+                        )
                             .tint(.accentColor)
-                        Defaults.Toggle(String(localized:"Allow minimalistic overrides"), key: .enableExtensionNotchMinimalisticOverrides)
+                        Toggle(
+                            String(localized: "Allow minimalistic overrides"),
+                            isOn: Binding(
+                                get: { authManager.areNotchMinimalisticOverridesEnabled },
+                                set: { _ = authManager.updateFeatureToggles(notchMinimalisticOverridesEnabled: $0) }
+                            )
+                        )
                             .tint(.accentColor)
-                        Defaults.Toggle(String(localized:"Allow interactive web content"), key: .enableExtensionNotchInteractiveWebViews)
+                        Toggle(
+                            String(localized: "Allow interactive web content"),
+                            isOn: Binding(
+                                get: { authManager.areNotchInteractiveWebViewsEnabled },
+                                set: { _ = authManager.updateFeatureToggles(notchInteractiveWebViewsEnabled: $0) }
+                            )
+                        )
                             .tint(.accentColor)
                     }
                     .padding(.leading, 4)
@@ -92,8 +163,8 @@ struct ExtensionsSettingsView: View {
         } header: {
             Text("Global Settings")
         } footer: {
-            if Defaults[.enableThirdPartyExtensions] {
-                Text("Third-party apps using AtollExtensionKit can display live activities, lock screen widgets, and dedicated notch experiences. Toggle features above or manage individual app permissions below.")
+            if extensionsEnabled {
+                Text("Third-party apps can request access, but remain blocked until authorized below. Shelf access additionally requires both the global file-sharing switch and the app-specific permission.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -102,6 +173,39 @@ struct ExtensionsSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var localRPCSection: some View {
+        Section {
+            LabeledContent("Endpoint") {
+                Text("ws://localhost:9020")
+                    .font(.system(.body, design: .monospaced))
+                    .textSelection(.enabled)
+            }
+        } header: {
+            Text("Local RPC")
+        } footer: {
+            Text("RPC accepts WebSocket connections from this Mac only. A custom client first sends atoll.requestAuthorization with its bundle identifier. After approval, it must use the AtollRPC/2 begin/complete handshake and encrypted frames. The token is never sent on the wire. Update legacy clients before connecting; see LOCAL_RPC_PROTOCOL.md in this repository.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func dismissAllContent(for bundleIdentifier: String) {
+        ExtensionLiveActivityManager.shared.dismissAll(for: bundleIdentifier)
+        ExtensionLockScreenWidgetManager.shared.dismissAll(for: bundleIdentifier)
+        ExtensionNotchExperienceManager.shared.dismissAll(for: bundleIdentifier)
+    }
+
+    private func notifyAuthorizationChange(for bundleIdentifier: String, isAuthorized: Bool) {
+        ExtensionRPCServer.shared.notifyAuthorizationChange(
+            bundleIdentifier: bundleIdentifier,
+            isAuthorized: isAuthorized
+        )
+        ExtensionXPCServiceHost.shared.notifyAuthorizationChange(
+            bundleIdentifier: bundleIdentifier,
+            isAuthorized: isAuthorized
+        )
     }
     
     private var authorizedAppsSection: some View {
@@ -179,6 +283,8 @@ private struct ExtensionEntryRow: View {
     let onRemove: () -> Void
     
     @State private var isExpanded = false
+    @State private var showingTokenRegenerationConfirmation = false
+    @State private var rpcTokenMessage: String?
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -226,6 +332,14 @@ private struct ExtensionEntryRow: View {
             }
         }
         .padding(.vertical, 8)
+        .alert("Regenerate RPC Token?", isPresented: $showingTokenRegenerationConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Regenerate", role: .destructive) {
+                regenerateAndCopyRPCToken()
+            }
+        } message: {
+            Text("Existing RPC connections for \(entry.appName) will be disconnected. The new token will be copied to the clipboard.")
+        }
     }
     
     private var statusIndicator: some View {
@@ -294,10 +408,17 @@ private struct ExtensionEntryRow: View {
             }
             
             Divider()
+
+            if let pendingRequirement = entry.pendingXPCCodeSigningRequirement {
+                pendingXPCIdentityControls(requirement: pendingRequirement)
+                Divider()
+            }
             
             // Scopes section
             if entry.status == .authorized {
                 scopeToggles
+                Divider()
+                rpcTokenControls
                 Divider()
             }
             
@@ -315,6 +436,87 @@ private struct ExtensionEntryRow: View {
         .background(Color.secondary.opacity(0.05))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
+
+    private func pendingXPCIdentityControls(requirement: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("XPC identity awaiting approval", systemImage: "signature")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+
+            if let path = entry.pendingXPCApplicationPath {
+                infoRow(label: "Application", value: path)
+                    .textSelection(.enabled)
+            }
+            infoRow(label: "Identity", value: xpcIdentityFingerprint(requirement))
+                .textSelection(.enabled)
+
+            Text("Approve only if this path belongs to the extension build you intended to connect. A rebuilt ad-hoc client may legitimately require approval again.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if entry.status == .authorized {
+                HStack(spacing: 8) {
+                    Button("Approve XPC Build") {
+                        if authManager.approvePendingXPCIdentity(
+                            bundleIdentifier: entry.bundleIdentifier
+                        ) {
+                            notifyAuthorizationChange(isAuthorized: true)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button("Reject") {
+                        authManager.rejectPendingXPCIdentity(
+                            bundleIdentifier: entry.bundleIdentifier
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func xpcIdentityFingerprint(_ requirement: String) -> String {
+        SHA256.hash(data: Data(requirement.utf8))
+            .prefix(12)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private var rpcTokenControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Local RPC Token")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Button("Copy Token") {
+                    copyRPCToken()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Regenerate") {
+                    showingTokenRegenerationConfirmation = true
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if let rpcTokenMessage {
+                Text(rpcTokenMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("AtollRPC/2 uses this token only for mutual proofs and encrypted session keys. Clients must use atoll.secure.begin and atoll.secure.complete; sending the token as authenticationToken is rejected. See LOCAL_RPC_PROTOCOL.md in this repository for the wire format.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
     
     private var scopeToggles: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -331,7 +533,12 @@ private struct ExtensionEntryRow: View {
                     } else {
                         newScopes.remove(.liveActivities)
                     }
-                    authManager.updateAllowedScopes(bundleIdentifier: entry.bundleIdentifier, allowedScopes: newScopes)
+                    if authManager.updateAllowedScopes(
+                        bundleIdentifier: entry.bundleIdentifier,
+                        allowedScopes: newScopes
+                    ), !enabled {
+                        liveActivityManager.dismissAll(for: entry.bundleIdentifier)
+                    }
                 }
             ))
             .font(.caption)
@@ -346,7 +553,12 @@ private struct ExtensionEntryRow: View {
                     } else {
                         newScopes.remove(.lockScreenWidgets)
                     }
-                    authManager.updateAllowedScopes(bundleIdentifier: entry.bundleIdentifier, allowedScopes: newScopes)
+                    if authManager.updateAllowedScopes(
+                        bundleIdentifier: entry.bundleIdentifier,
+                        allowedScopes: newScopes
+                    ), !enabled {
+                        widgetManager.dismissAll(for: entry.bundleIdentifier)
+                    }
                 }
             ))
             .font(.caption)
@@ -361,11 +573,34 @@ private struct ExtensionEntryRow: View {
                     } else {
                         newScopes.remove(.notchExperiences)
                     }
-                    authManager.updateAllowedScopes(bundleIdentifier: entry.bundleIdentifier, allowedScopes: newScopes)
+                    if authManager.updateAllowedScopes(
+                        bundleIdentifier: entry.bundleIdentifier,
+                        allowedScopes: newScopes
+                    ), !enabled {
+                        notchExperienceManager.dismissAll(for: entry.bundleIdentifier)
+                    }
                 }
             ))
             .font(.caption)
             .disabled(!authManager.areNotchExperiencesEnabled)
+
+            Toggle("Shelf File Access", isOn: Binding(
+                get: { entry.allowedScopes.contains(.fileSharing) },
+                set: { enabled in
+                    var newScopes = entry.allowedScopes
+                    if enabled {
+                        newScopes.insert(.fileSharing)
+                    } else {
+                        newScopes.remove(.fileSharing)
+                    }
+                    _ = authManager.updateAllowedScopes(
+                        bundleIdentifier: entry.bundleIdentifier,
+                        allowedScopes: newScopes
+                    )
+                }
+            ))
+            .font(.caption)
+            .disabled(!authManager.isFileSharingEnabled)
         }
     }
     
@@ -420,29 +655,39 @@ private struct ExtensionEntryRow: View {
         HStack(spacing: 8) {
             switch entry.status {
             case .pending:
-                Button("Authorize") {
-                    authManager.authorize(bundleIdentifier: entry.bundleIdentifier, appName: entry.appName)
+                Button(entry.pendingXPCCodeSigningRequirement == nil ? "Authorize" : "Authorize App + XPC Build") {
+                    if authManager.authorize(bundleIdentifier: entry.bundleIdentifier, appName: entry.appName) {
+                        notifyAuthorizationChange(isAuthorized: true)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 
                 Button("Deny") {
-                    authManager.deny(bundleIdentifier: entry.bundleIdentifier, reason: "Denied by user")
+                    if authManager.deny(bundleIdentifier: entry.bundleIdentifier, reason: "Denied by user") {
+                        dismissAllContent()
+                        notifyAuthorizationChange(isAuthorized: false)
+                    }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 
             case .authorized:
                 Button("Revoke Access") {
-                    authManager.revoke(bundleIdentifier: entry.bundleIdentifier, reason: "Revoked by user")
+                    if authManager.revoke(bundleIdentifier: entry.bundleIdentifier, reason: "Revoked by user") {
+                        dismissAllContent()
+                        notifyAuthorizationChange(isAuthorized: false)
+                    }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(.orange)
                 
             case .denied, .revoked:
-                Button("Re-authorize") {
-                    authManager.authorize(bundleIdentifier: entry.bundleIdentifier, appName: entry.appName)
+                Button(entry.pendingXPCCodeSigningRequirement == nil ? "Re-authorize" : "Re-authorize App + XPC Build") {
+                    if authManager.authorize(bundleIdentifier: entry.bundleIdentifier, appName: entry.appName) {
+                        notifyAuthorizationChange(isAuthorized: true)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -458,6 +703,49 @@ private struct ExtensionEntryRow: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .tint(.red)
+        }
+    }
+
+    private func notifyAuthorizationChange(isAuthorized: Bool) {
+        ExtensionRPCServer.shared.notifyAuthorizationChange(
+            bundleIdentifier: entry.bundleIdentifier,
+            isAuthorized: isAuthorized
+        )
+        ExtensionXPCServiceHost.shared.notifyAuthorizationChange(
+            bundleIdentifier: entry.bundleIdentifier,
+            isAuthorized: isAuthorized
+        )
+    }
+
+    private func dismissAllContent() {
+        liveActivityManager.dismissAll(for: entry.bundleIdentifier)
+        widgetManager.dismissAll(for: entry.bundleIdentifier)
+        notchExperienceManager.dismissAll(for: entry.bundleIdentifier)
+    }
+
+    private func copyRPCToken() {
+        do {
+            let token = try ExtensionRPCServer.shared.authenticationToken(
+                for: entry.bundleIdentifier
+            )
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(token, forType: .string)
+            rpcTokenMessage = "Token copied to the clipboard."
+        } catch {
+            rpcTokenMessage = "Could not copy the token: \(error.localizedDescription)"
+        }
+    }
+
+    private func regenerateAndCopyRPCToken() {
+        do {
+            let token = try ExtensionRPCServer.shared.regenerateAuthenticationToken(
+                for: entry.bundleIdentifier
+            )
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(token, forType: .string)
+            rpcTokenMessage = "A new token was copied to the clipboard."
+        } catch {
+            rpcTokenMessage = "Could not regenerate the token: \(error.localizedDescription)"
         }
     }
 

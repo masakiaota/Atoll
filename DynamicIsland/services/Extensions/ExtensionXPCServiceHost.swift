@@ -18,6 +18,7 @@
 
 import AppKit
 import Foundation
+import Security
 import AtollExtensionKit
 
 /// Shared constants for the Atoll extension XPC service.
@@ -25,17 +26,48 @@ enum ExtensionXPCServiceConstants {
     static let machServiceName = "com.ebullioscopic.Atoll.xpc"
 }
 
+private struct ExtensionXPCPeerIdentity: Sendable {
+    let bundleIdentifier: String
+    let codeSigningRequirement: String
+    let applicationPath: String?
+}
+
+/// Carries Foundation XPC objects from the listener's private queue to the
+/// main actor, where all host state and exported services are configured.
+private final class ExtensionXPCPendingConnection: @unchecked Sendable {
+    let listener: NSXPCListener
+    let connection: NSXPCConnection
+    let peerIdentity: ExtensionXPCPeerIdentity
+
+    init(
+        listener: NSXPCListener,
+        connection: NSXPCConnection,
+        peerIdentity: ExtensionXPCPeerIdentity
+    ) {
+        self.listener = listener
+        self.connection = connection
+        self.peerIdentity = peerIdentity
+    }
+}
+
 @MainActor
 final class ExtensionXPCServiceHost: NSObject, NSXPCListenerDelegate {
     static let shared = ExtensionXPCServiceHost()
+    private static let maximumClientConnections = 64
 
     private final class ClientContext {
-        weak var connection: NSXPCConnection?
+        let connection: NSXPCConnection
         let bundleIdentifier: String
+        let codeSigningRequirement: String
 
-        init(connection: NSXPCConnection, bundleIdentifier: String) {
+        init(
+            connection: NSXPCConnection,
+            bundleIdentifier: String,
+            codeSigningRequirement: String
+        ) {
             self.connection = connection
             self.bundleIdentifier = bundleIdentifier
+            self.codeSigningRequirement = codeSigningRequirement
         }
     }
 
@@ -63,17 +95,72 @@ final class ExtensionXPCServiceHost: NSObject, NSXPCListenerDelegate {
     func stop() {
         listener?.invalidate()
         listener = nil
+
+        let activeConnections = clientContexts.values.map(\.connection)
         clientContexts.removeAll()
+        for connection in activeConnections {
+            connection.invalidationHandler = nil
+            connection.interruptionHandler = nil
+            connection.invalidate()
+        }
         Logger.log("Stopped Atoll XPC listener", category: .extensions)
     }
 
-    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        guard let bundleIdentifier = resolveBundleIdentifier(for: connection) else {
-            Logger.log("Rejected XPC connection without bundle identifier", category: .extensions)
+    /// NSXPCListener invokes its delegate on a private serial queue. Keep this
+    /// entry point nonisolated and move every access to host state onto the main
+    /// actor before the suspended connection is configured or resumed.
+    nonisolated func listener(
+        _ listener: NSXPCListener,
+        shouldAcceptNewConnection connection: NSXPCConnection
+    ) -> Bool {
+        guard let peerIdentity = Self.resolvePeerIdentity(for: connection) else {
             return false
         }
 
-        let service = ExtensionXPCService(bundleIdentifier: bundleIdentifier, host: self, connection: connection)
+        // Pin every message on this connection to the designated requirement derived
+        // from the validated running peer. A PID/bundle identifier lookup alone is not
+        // a sufficient authentication boundary and is vulnerable to process races.
+        connection.setCodeSigningRequirement(peerIdentity.codeSigningRequirement)
+
+        let pendingConnection = ExtensionXPCPendingConnection(
+            listener: listener,
+            connection: connection,
+            peerIdentity: peerIdentity
+        )
+        Task { @MainActor [weak self] in
+            guard let self else {
+                pendingConnection.connection.invalidate()
+                return
+            }
+            self.configure(pendingConnection)
+        }
+
+        // Returning true without immediately resuming is supported by
+        // NSXPCListener. The main actor resumes the connection after it has
+        // revalidated that this listener is still current.
+        return true
+    }
+
+    private func configure(_ pendingConnection: ExtensionXPCPendingConnection) {
+        let connection = pendingConnection.connection
+        guard listener === pendingConnection.listener else {
+            connection.invalidate()
+            Logger.log("Rejected XPC connection from a stale listener", category: .extensions)
+            return
+        }
+        guard clientContexts.count < Self.maximumClientConnections else {
+            connection.invalidate()
+            return
+        }
+
+        let peerIdentity = pendingConnection.peerIdentity
+        let bundleIdentifier = peerIdentity.bundleIdentifier
+        let service = ExtensionXPCService(
+            bundleIdentifier: bundleIdentifier,
+            codeSigningRequirement: peerIdentity.codeSigningRequirement,
+            applicationPath: peerIdentity.applicationPath,
+            connection: connection
+        )
         connection.exportedInterface = NSXPCInterface(with: AtollXPCServiceProtocol.self)
         connection.exportedObject = service
         connection.remoteObjectInterface = NSXPCInterface(with: AtollXPCClientProtocol.self)
@@ -92,14 +179,17 @@ final class ExtensionXPCServiceHost: NSObject, NSXPCListenerDelegate {
             }
         }
 
+        clientContexts[ObjectIdentifier(connection)] = ClientContext(
+            connection: connection,
+            bundleIdentifier: bundleIdentifier,
+            codeSigningRequirement: peerIdentity.codeSigningRequirement
+        )
         connection.resume()
-        clientContexts[ObjectIdentifier(connection)] = ClientContext(connection: connection, bundleIdentifier: bundleIdentifier)
         Logger.log("Accepted XPC connection from \(bundleIdentifier)", category: .extensions)
-        return true
     }
 
     func notifyAuthorizationChange(bundleIdentifier: String, isAuthorized: Bool) {
-        deliver(to: bundleIdentifier) { client in
+        deliver(to: bundleIdentifier, requiresAuthorizedIdentity: isAuthorized) { client in
             client.authorizationDidChange(isAuthorized: isAuthorized)
         }
     }
@@ -122,26 +212,76 @@ final class ExtensionXPCServiceHost: NSObject, NSXPCListenerDelegate {
         }
     }
 
-    private func resolveBundleIdentifier(for connection: NSXPCConnection) -> String? {
+    nonisolated private static func resolvePeerIdentity(
+        for connection: NSXPCConnection
+    ) -> ExtensionXPCPeerIdentity? {
         let processIdentifier = connection.processIdentifier
-        guard processIdentifier != 0 else { return nil }
-
-        if let app = NSRunningApplication(processIdentifier: pid_t(processIdentifier)),
-           let bundleIdentifier = app.bundleIdentifier {
-            return bundleIdentifier
+        guard processIdentifier > 0,
+              let application = NSRunningApplication(processIdentifier: processIdentifier),
+              let bundleIdentifier = application.bundleIdentifier,
+              !bundleIdentifier.isEmpty else {
+            return nil
         }
 
-        return nil
+        let guestAttributes = [
+            kSecGuestAttributePid as String: NSNumber(value: processIdentifier)
+        ] as CFDictionary
+
+        var dynamicCode: SecCode?
+        guard SecCodeCopyGuestWithAttributes(nil, guestAttributes, [], &dynamicCode) == errSecSuccess,
+              let dynamicCode,
+              SecCodeCheckValidity(dynamicCode, [], nil) == errSecSuccess else {
+            return nil
+        }
+
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(dynamicCode, [], &staticCode) == errSecSuccess,
+              let staticCode else {
+            return nil
+        }
+
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, [], &signingInformation) == errSecSuccess,
+              let signingValues = signingInformation as? [CFString: Any],
+              let signingIdentifier = signingValues[kSecCodeInfoIdentifier] as? String,
+              signingIdentifier == bundleIdentifier else {
+            return nil
+        }
+
+        var designatedRequirement: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(staticCode, [], &designatedRequirement) == errSecSuccess,
+              let designatedRequirement else {
+            return nil
+        }
+
+        var requirementText: CFString?
+        guard SecRequirementCopyString(designatedRequirement, [], &requirementText) == errSecSuccess,
+              let requirementText else {
+            return nil
+        }
+
+        return ExtensionXPCPeerIdentity(
+            bundleIdentifier: bundleIdentifier,
+            codeSigningRequirement: requirementText as String,
+            applicationPath: application.bundleURL?.path
+        )
     }
 
-    private func deliver(to bundleIdentifier: String, send block: (AtollXPCClientProtocol) -> Void) {
-        var staleIdentifiers: [ObjectIdentifier] = []
-
-        for (identifier, context) in clientContexts where context.bundleIdentifier == bundleIdentifier {
-            guard let connection = context.connection else {
-                staleIdentifiers.append(identifier)
+    private func deliver(
+        to bundleIdentifier: String,
+        requiresAuthorizedIdentity: Bool = true,
+        send block: (AtollXPCClientProtocol) -> Void
+    ) {
+        for (_, context) in clientContexts where context.bundleIdentifier == bundleIdentifier {
+            if requiresAuthorizedIdentity,
+               !ExtensionAuthorizationManager.shared.isXPCIdentityAuthorized(
+                bundleIdentifier: bundleIdentifier,
+                codeSigningRequirement: context.codeSigningRequirement
+               ) {
                 continue
             }
+
+            let connection = context.connection
 
             guard let client = connection.remoteObjectProxyWithErrorHandler({ error in
                 Logger.log("Failed to deliver XPC callback to \(bundleIdentifier): \(error)", category: .extensions)
@@ -151,8 +291,6 @@ final class ExtensionXPCServiceHost: NSObject, NSXPCListenerDelegate {
 
             block(client)
         }
-
-        staleIdentifiers.forEach { clientContexts.removeValue(forKey: $0) }
     }
 
     private func removeConnection(_ connection: NSXPCConnection) {

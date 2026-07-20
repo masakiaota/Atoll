@@ -449,8 +449,7 @@ class MusicManager: ObservableObject {
     @MainActor private var pendingOptimisticPlayState: Bool?
 
     // Helper to check if macOS has removed support for NowPlayingController
-    public private(set) var isNowPlayingDeprecated: Bool = false
-    private let mediaChecker = MediaChecker()
+    @Published public private(set) var isNowPlayingDeprecated: Bool = false
 
     // Active controller
     private var activeController: (any MediaControllerProtocol)?
@@ -565,8 +564,12 @@ class MusicManager: ObservableObject {
         // Listen for changes to the default controller preference
         NotificationCenter.default.publisher(for: Notification.Name.mediaControllerChanged)
             .sink { [weak self] _ in
-                self?.isPearDesktopAutoSwitched = false
-                self?.setActiveControllerBasedOnPreference()
+                guard let self else { return }
+                Task { @MainActor in
+                    self.isPearDesktopAutoSwitched = false
+                    await self.refreshBundledMediaRemoteAvailability()
+                    self.setActiveControllerBasedOnPreference()
+                }
             }
             .store(in: &cancellables)
 
@@ -580,15 +583,9 @@ class MusicManager: ObservableObject {
         // Observe Pear Desktop launch/terminate for auto-detection
         setupPearDesktopAutoDetection()
 
-        // Initialize deprecation check asynchronously
+        // Check the bundled adapter only after explicit user consent.
         Task { @MainActor in
-            do {
-                self.isNowPlayingDeprecated = try await self.mediaChecker.checkDeprecationStatus()
-                print("Deprecation check completed: \(self.isNowPlayingDeprecated)")
-            } catch {
-                print("Failed to check deprecation status: \(error). Defaulting to false.")
-                self.isNowPlayingDeprecated = false
-            }
+            await self.refreshBundledMediaRemoteAvailability()
             
             // Check if Pear Desktop is already running at startup
             let pearDesktopRunning = NSWorkspace.shared.runningApplications.contains {
@@ -609,6 +606,25 @@ class MusicManager: ObservableObject {
     }
 
     // MARK: - Pear Desktop Auto-Detection
+    @MainActor
+    private func refreshBundledMediaRemoteAvailability() async {
+        guard MediaRemoteExecutionPolicy.isUserConsentEnabled() else {
+            isNowPlayingDeprecated = true
+            return
+        }
+
+        do {
+            // The streaming path validates and opens the exact bytes it
+            // executes, and fails closed if the current macOS rejects them.
+            try MediaRemoteExecutionPolicy.validateInstallation()
+            isNowPlayingDeprecated = false
+        } catch {
+            print("Bundled MediaRemote validation failed: \(error). Disabling the adapter.")
+            isNowPlayingDeprecated = true
+            MediaRemoteExecutionPolicy.disableUserConsentAfterValidationFailure()
+        }
+    }
+
     private func setupPearDesktopAutoDetection() {
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)
             .sink { [weak self] notification in
@@ -664,16 +680,17 @@ class MusicManager: ObservableObject {
             activeController = nil
         }
 
+        if type.requiresBundledMediaRemoteAdapter {
+            guard MediaRemoteExecutionPolicy.isUserConsentEnabled(), !isNowPlayingDeprecated else {
+                return nil
+            }
+        }
+
         let newController: (any MediaControllerProtocol)?
 
         switch type {
         case .nowPlaying:
-            // Only create NowPlayingController if not deprecated on this macOS version
-            if !self.isNowPlayingDeprecated {
-                newController = NowPlayingController()
-            } else {
-                return nil
-            }
+            newController = NowPlayingController()
         case .appleMusic:
             newController = AppleMusicController()
         case .spotify:
@@ -705,10 +722,9 @@ class MusicManager: ObservableObject {
         let preferredType = Defaults[.mediaController]
         print("Preferred Media Controller: \(preferredType)")
 
-        // If NowPlaying is deprecated but that's the preference, use Apple Music instead
-        let controllerType = (self.isNowPlayingDeprecated && preferredType == .nowPlaying)
-            ? .appleMusic
-            : preferredType
+        let adapterUnavailable = preferredType.requiresBundledMediaRemoteAdapter
+            && (!MediaRemoteExecutionPolicy.isUserConsentEnabled() || isNowPlayingDeprecated)
+        let controllerType = adapterUnavailable ? .appleMusic : preferredType
 
         if let controller = createController(for: controllerType) {
             setActiveController(controller)

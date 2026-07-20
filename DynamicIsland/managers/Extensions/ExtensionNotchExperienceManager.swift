@@ -29,24 +29,8 @@ final class ExtensionNotchExperienceManager: ObservableObject {
 
     private let authorizationManager = ExtensionAuthorizationManager.shared
     private let maxCapacityKey = Defaults.Keys.extensionNotchExperienceCapacity
-    private let eventBridge = ExtensionEventBridge.shared
-    private var observerToken: NSObjectProtocol?
-    private var suppressBroadcast = false
-    private let currentProcessID = ProcessInfo.processInfo.processIdentifier
 
-    private init() {
-        activeExperiences = eventBridge.loadPersistedNotchExperiences()
-        sortExperiences()
-        observerToken = eventBridge.observeNotchExperienceSnapshots { [weak self] payloads, sourcePID in
-            self?.applySnapshot(payloads, sourcePID: sourcePID)
-        }
-    }
-
-    deinit {
-        if let observerToken {
-            eventBridge.removeObserver(observerToken)
-        }
-    }
+    private init() {}
 
     // MARK: - Presentation Lifecycle
 
@@ -92,13 +76,12 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         }
 
         authorizationManager.recordActivity(for: bundleIdentifier, scope: .notchExperiences)
-        broadcastSnapshot()
-
-        if let tabConfig = descriptor.tab, Defaults[.enableExtensionNotchTabs] {
+        if let tabConfig = descriptor.tab, authorizationManager.areNotchTabsEnabled {
             Logger.log("Notch experience tab ready (title: \(tabConfig.title))", category: .extensions)
         }
 
-        if descriptor.minimalistic != nil && Defaults[.enableExtensionNotchMinimalisticOverrides] {
+        if descriptor.minimalistic != nil
+            && authorizationManager.areNotchMinimalisticOverridesEnabled {
             Logger.log("Notch experience minimalistic override available", category: .extensions)
         }
 
@@ -108,6 +91,10 @@ final class ExtensionNotchExperienceManager: ObservableObject {
     }
 
     func update(descriptor: AtollNotchExperienceDescriptor, bundleIdentifier: String) throws {
+        guard authorizationManager.canProcessNotchExperienceRequest(from: bundleIdentifier) else {
+            logDiagnostics("Rejected notch experience update \(descriptor.id) from \(bundleIdentifier): scope disabled or bundle unauthorized")
+            throw ExtensionValidationError.unauthorized
+        }
         try ExtensionDescriptorValidator.validate(descriptor)
         guard descriptor.bundleIdentifier == bundleIdentifier else {
             logDiagnostics("Rejected notch experience update \(descriptor.id) from \(bundleIdentifier): bundle mismatch (descriptor: \(descriptor.bundleIdentifier))")
@@ -126,7 +113,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         sortExperiences()
         authorizationManager.recordActivity(for: bundleIdentifier, scope: .notchExperiences)
         logDiagnostics("Updated notch experience \(descriptor.id) for \(bundleIdentifier)")
-        broadcastSnapshot()
     }
 
     func dismiss(experienceID: String, bundleIdentifier: String) {
@@ -139,7 +125,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         ExtensionXPCServiceHost.shared.notifyNotchExperienceDismiss(bundleIdentifier: bundleIdentifier, experienceID: experienceID)
         ExtensionRPCServer.shared.notifyNotchExperienceDismiss(bundleIdentifier: bundleIdentifier, experienceID: experienceID)
         logDiagnostics("Removed notch experience \(experienceID) for \(bundleIdentifier); remaining: \(activeExperiences.count)")
-        broadcastSnapshot()
     }
 
     func dismissAll(for bundleIdentifier: String) {
@@ -155,25 +140,44 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         }
         if !ids.isEmpty {
             logDiagnostics("Removed all notch experiences for \(bundleIdentifier); ids: \(ids.joined(separator: ", "))")
-            broadcastSnapshot()
         }
+    }
+
+    func dismissInteractiveWebContent() {
+        let removedPayloads = activeExperiences.filter { $0.descriptor.hasWebContent }
+        guard !removedPayloads.isEmpty else { return }
+
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+            activeExperiences.removeAll { $0.descriptor.hasWebContent }
+        }
+        for payload in removedPayloads {
+            ExtensionXPCServiceHost.shared.notifyNotchExperienceDismiss(
+                bundleIdentifier: payload.bundleIdentifier,
+                experienceID: payload.descriptor.id
+            )
+            ExtensionRPCServer.shared.notifyNotchExperienceDismiss(
+                bundleIdentifier: payload.bundleIdentifier,
+                experienceID: payload.descriptor.id
+            )
+        }
+        logDiagnostics("Removed interactive web experiences after the secure web-content permission was disabled")
     }
 
     // MARK: - Presentation Resolution
 
     func highestPriorityTabPayload() -> ExtensionNotchExperiencePayload? {
-        guard Defaults[.enableThirdPartyExtensions],
-              Defaults[.enableExtensionNotchExperiences],
-              Defaults[.enableExtensionNotchTabs] else {
+        guard authorizationManager.isExtensionsFeatureEnabled,
+              authorizationManager.areNotchExperiencesEnabled,
+              authorizationManager.areNotchTabsEnabled else {
             return nil
         }
         return activeExperiences.first(where: { $0.descriptor.tab != nil })
     }
 
     func minimalisticReplacementPayload() -> ExtensionNotchExperiencePayload? {
-        guard Defaults[.enableThirdPartyExtensions],
-              Defaults[.enableExtensionNotchExperiences],
-              Defaults[.enableExtensionNotchMinimalisticOverrides] else {
+        guard authorizationManager.isExtensionsFeatureEnabled,
+              authorizationManager.areNotchExperiencesEnabled,
+              authorizationManager.areNotchMinimalisticOverridesEnabled else {
             return nil
         }
         return activeExperiences.first(where: { $0.descriptor.minimalistic != nil })
@@ -187,7 +191,7 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         activeExperiences.first { $0.descriptor.id == experienceID }
     }
 
-    // MARK: - Snapshot Sync
+    // MARK: - Ordering
 
     private func sortExperiences() {
         activeExperiences.sort(by: descriptorComparator)
@@ -200,23 +204,9 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         return lhs.priority > rhs.priority
     }
 
-    private func broadcastSnapshot() {
-        guard !suppressBroadcast else { return }
-        eventBridge.broadcastNotchExperienceSnapshot(activeExperiences)
-        logDiagnostics("Broadcasted notch experience snapshot (count: \(activeExperiences.count))")
-    }
-
-    private func applySnapshot(_ payloads: [ExtensionNotchExperiencePayload], sourcePID: Int32) {
-        guard sourcePID != currentProcessID else { return }
-        suppressBroadcast = true
-        activeExperiences = payloads.sorted(by: descriptorComparator)
-        suppressBroadcast = false
-        logDiagnostics("Applied external notch experience snapshot from PID \(sourcePID) (count: \(payloads.count))")
-    }
-
     private func ensureWebContentSupport(for descriptor: AtollNotchExperienceDescriptor) throws {
         guard descriptor.hasWebContent else { return }
-        guard Defaults[.enableExtensionNotchInteractiveWebViews] else {
+        guard authorizationManager.areNotchInteractiveWebViewsEnabled else {
             logDiagnostics("Rejected notch experience \(descriptor.id) due to web content while interactive web views are disabled")
             throw ExtensionValidationError.unsupportedContent
         }

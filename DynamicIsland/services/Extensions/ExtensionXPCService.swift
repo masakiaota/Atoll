@@ -24,7 +24,8 @@ import AtollExtensionKit
 @MainActor
 final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtocol {
     private let bundleIdentifier: String
-    private weak var host: ExtensionXPCServiceHost?
+    private let codeSigningRequirement: String
+    private let applicationPath: String?
     private weak var connection: NSXPCConnection?
 
     private let authorizationManager = ExtensionAuthorizationManager.shared
@@ -33,9 +34,15 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     private let notchExperienceManager = ExtensionNotchExperienceManager.shared
     private let decoder = JSONDecoder()
 
-    init(bundleIdentifier: String, host: ExtensionXPCServiceHost, connection: NSXPCConnection) {
+    init(
+        bundleIdentifier: String,
+        codeSigningRequirement: String,
+        applicationPath: String?,
+        connection: NSXPCConnection
+    ) {
         self.bundleIdentifier = bundleIdentifier
-        self.host = host
+        self.codeSigningRequirement = codeSigningRequirement
+        self.applicationPath = applicationPath
         self.connection = connection
         super.init()
     }
@@ -52,16 +59,23 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
                 return
             }
 
-            let entry = self.authorizationManager.ensureEntryExists(bundleIdentifier: self.bundleIdentifier, appName: self.resolvedApplicationName())
-
-            if entry.status == .pending {
-                self.authorizationManager.authorize(bundleIdentifier: self.bundleIdentifier, appName: self.resolvedApplicationName())
-                self.host?.notifyAuthorizationChange(bundleIdentifier: self.bundleIdentifier, isAuthorized: true)
-                reply(true, nil)
+            guard let entry = self.authorizationManager.registerPendingXPCIdentity(
+                bundleIdentifier: self.bundleIdentifier,
+                appName: self.resolvedApplicationName(),
+                codeSigningRequirement: self.codeSigningRequirement,
+                applicationPath: self.applicationPath
+            ) else {
+                reply(false, ExtensionValidationError.rateLimited.asNSError)
                 return
             }
-
-            reply(entry.isAuthorized, entry.isAuthorized ? nil : ExtensionValidationError.unauthorized.asNSError)
+            self.logDiagnostics("XPC client \(self.bundleIdentifier) requested authorization (status: \(entry.status.rawValue))")
+            reply(
+                self.authorizationManager.isXPCIdentityAuthorized(
+                    bundleIdentifier: self.bundleIdentifier,
+                    codeSigningRequirement: self.codeSigningRequirement
+                ),
+                nil
+            )
         }
     }
 
@@ -73,7 +87,10 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
                 return
             }
 
-            let isAuthorized = self.authorizationManager.authorizationEntry(for: self.bundleIdentifier)?.isAuthorized ?? false
+            let isAuthorized = self.authorizationManager.isXPCIdentityAuthorized(
+                bundleIdentifier: self.bundleIdentifier,
+                codeSigningRequirement: self.codeSigningRequirement
+            )
             reply(isAuthorized)
         }
     }
@@ -83,6 +100,9 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     func presentLiveActivity(descriptorData: Data, reply: @escaping (Bool, Error?) -> Void) {
         respond(reply: reply) { service in
             let descriptor = try service.decoder.decode(AtollLiveActivityDescriptor.self, from: descriptorData)
+            guard descriptor.bundleIdentifier == service.bundleIdentifier else {
+                throw ExtensionValidationError.invalidDescriptor("Bundle identifier mismatch")
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
             service.logDiagnostics("Received live activity payload from \(service.bundleIdentifier) (id: \(descriptor.id), priority: \(descriptor.priority.rawValue), coexistence: \(descriptor.allowsMusicCoexistence))")
             try service.liveActivityManager.present(descriptor: descriptor, bundleIdentifier: service.bundleIdentifier)
@@ -93,6 +113,9 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     func updateLiveActivity(descriptorData: Data, reply: @escaping (Bool, Error?) -> Void) {
         respond(reply: reply) { service in
             let descriptor = try service.decoder.decode(AtollLiveActivityDescriptor.self, from: descriptorData)
+            guard descriptor.bundleIdentifier == service.bundleIdentifier else {
+                throw ExtensionValidationError.invalidDescriptor("Bundle identifier mismatch")
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
             service.logDiagnostics("Received live activity update from \(service.bundleIdentifier) (id: \(descriptor.id))")
             try service.liveActivityManager.update(descriptor: descriptor, bundleIdentifier: service.bundleIdentifier)
@@ -104,6 +127,13 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard self.validate(bundleIdentifier: providedBundleIdentifier, reply: reply) else { return }
+            guard self.validateAuthorizedIdentity(reply: reply) else { return }
+            guard self.authorizationManager.canProcessLiveActivityRequest(
+                from: self.bundleIdentifier
+            ) else {
+                reply(false, ExtensionValidationError.unauthorized.asNSError)
+                return
+            }
 
             self.logDiagnostics("Received live activity dismissal from \(self.bundleIdentifier) (id: \(activityID))")
             self.liveActivityManager.dismiss(activityID: activityID, bundleIdentifier: self.bundleIdentifier)
@@ -117,6 +147,9 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     func presentLockScreenWidget(descriptorData: Data, reply: @escaping (Bool, Error?) -> Void) {
         respond(reply: reply) { service in
             let descriptor = try service.decoder.decode(AtollLockScreenWidgetDescriptor.self, from: descriptorData)
+            guard descriptor.bundleIdentifier == service.bundleIdentifier else {
+                throw ExtensionValidationError.invalidDescriptor("Bundle identifier mismatch")
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
             service.logDiagnostics("Received lock screen widget payload from \(service.bundleIdentifier) (id: \(descriptor.id), style: \(descriptor.layoutStyle))")
             try service.widgetManager.present(descriptor: descriptor, bundleIdentifier: service.bundleIdentifier)
@@ -127,6 +160,9 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     func updateLockScreenWidget(descriptorData: Data, reply: @escaping (Bool, Error?) -> Void) {
         respond(reply: reply) { service in
             let descriptor = try service.decoder.decode(AtollLockScreenWidgetDescriptor.self, from: descriptorData)
+            guard descriptor.bundleIdentifier == service.bundleIdentifier else {
+                throw ExtensionValidationError.invalidDescriptor("Bundle identifier mismatch")
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
             service.logDiagnostics("Received lock screen widget update from \(service.bundleIdentifier) (id: \(descriptor.id))")
             try service.widgetManager.update(descriptor: descriptor, bundleIdentifier: service.bundleIdentifier)
@@ -138,6 +174,13 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard self.validate(bundleIdentifier: providedBundleIdentifier, reply: reply) else { return }
+            guard self.validateAuthorizedIdentity(reply: reply) else { return }
+            guard self.authorizationManager.canProcessLockScreenRequest(
+                from: self.bundleIdentifier
+            ) else {
+                reply(false, ExtensionValidationError.unauthorized.asNSError)
+                return
+            }
 
             self.logDiagnostics("Received lock screen widget dismissal from \(self.bundleIdentifier) (id: \(widgetID))")
             self.widgetManager.dismiss(widgetID: widgetID, bundleIdentifier: self.bundleIdentifier)
@@ -151,6 +194,9 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     func presentNotchExperience(descriptorData: Data, reply: @escaping (Bool, Error?) -> Void) {
         respond(reply: reply) { service in
             let descriptor = try service.decoder.decode(AtollNotchExperienceDescriptor.self, from: descriptorData)
+            guard descriptor.bundleIdentifier == service.bundleIdentifier else {
+                throw ExtensionValidationError.invalidDescriptor("Bundle identifier mismatch")
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
             service.logDiagnostics("Received notch experience payload from \(service.bundleIdentifier) (id: \(descriptor.id), priority: \(descriptor.priority.rawValue))")
             try service.notchExperienceManager.present(descriptor: descriptor, bundleIdentifier: service.bundleIdentifier)
@@ -161,6 +207,9 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
     func updateNotchExperience(descriptorData: Data, reply: @escaping (Bool, Error?) -> Void) {
         respond(reply: reply) { service in
             let descriptor = try service.decoder.decode(AtollNotchExperienceDescriptor.self, from: descriptorData)
+            guard descriptor.bundleIdentifier == service.bundleIdentifier else {
+                throw ExtensionValidationError.invalidDescriptor("Bundle identifier mismatch")
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
             service.logDiagnostics("Received notch experience update from \(service.bundleIdentifier) (id: \(descriptor.id))")
             try service.notchExperienceManager.update(descriptor: descriptor, bundleIdentifier: service.bundleIdentifier)
@@ -172,6 +221,13 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard self.validate(bundleIdentifier: providedBundleIdentifier, reply: reply) else { return }
+            guard self.validateAuthorizedIdentity(reply: reply) else { return }
+            guard self.authorizationManager.canProcessNotchExperienceRequest(
+                from: self.bundleIdentifier
+            ) else {
+                reply(false, ExtensionValidationError.unauthorized.asNSError)
+                return
+            }
 
             self.logDiagnostics("Received notch experience dismissal from \(self.bundleIdentifier) (id: \(experienceID))")
             self.notchExperienceManager.dismiss(experienceID: experienceID, bundleIdentifier: self.bundleIdentifier)
@@ -194,6 +250,12 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                guard self.authorizationManager.isXPCIdentityAuthorized(
+                    bundleIdentifier: self.bundleIdentifier,
+                    codeSigningRequirement: self.codeSigningRequirement
+                ) else {
+                    throw ExtensionValidationError.unauthorized
+                }
                 try operation(self)
                 reply(true, nil)
             } catch {
@@ -210,6 +272,19 @@ final class ExtensionXPCService: NSObject, @preconcurrency AtollXPCServiceProtoc
             let error = ExtensionXPCServiceError.bundleMismatch(expected: bundleIdentifier, received: providedBundleIdentifier)
             logDiagnostics("Rejected XPC request due to bundle mismatch. Expected \(bundleIdentifier) received \(providedBundleIdentifier)")
             reply(false, error.asNSError)
+            return false
+        }
+        return true
+    }
+
+    private func validateAuthorizedIdentity(
+        reply: @escaping (Bool, Error?) -> Void
+    ) -> Bool {
+        guard authorizationManager.isXPCIdentityAuthorized(
+            bundleIdentifier: bundleIdentifier,
+            codeSigningRequirement: codeSigningRequirement
+        ) else {
+            reply(false, ExtensionValidationError.unauthorized.asNSError)
             return false
         }
         return true

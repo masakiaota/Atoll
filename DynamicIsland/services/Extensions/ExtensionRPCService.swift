@@ -27,6 +27,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class ExtensionRPCService {
     let bundleIdentifier: String
+    private let connectionID: UUID?
     private weak var server: ExtensionRPCServer?
 
     private let liveActivityManager = ExtensionLiveActivityManager.shared
@@ -36,6 +37,13 @@ final class ExtensionRPCService {
 
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
+    private static let maximumShelfItemDataSize = 64 * 1024 * 1024
+
+    private enum ShelfFileReadResult {
+        case data(Data)
+        case tooLarge
+        case unavailable
+    }
 
     // Keys whose values represent Swift enums that use {"type":...} in client format.
     // These need to be transformed to Swift Codable format: {"caseName": {params}}.
@@ -49,9 +57,10 @@ final class ExtensionRPCService {
         "text", "icon", "progress", "graph", "gauge", "spacer", "divider", "webView"
     ]
 
-    init(bundleIdentifier: String, server: ExtensionRPCServer) {
+    init(bundleIdentifier: String, server: ExtensionRPCServer, connectionID: UUID? = nil) {
         self.bundleIdentifier = bundleIdentifier
         self.server = server
+        self.connectionID = connectionID
     }
 
     // MARK: - Method Routing
@@ -137,36 +146,31 @@ final class ExtensionRPCService {
     // MARK: - Authorization
 
     private func handleRequestAuthorization(params: RPCParams?, id: String) -> Codable {
-        guard Defaults[.enableThirdPartyExtensions] else {
+        guard authorizationManager.isExtensionsFeatureEnabled else {
             return RPCErrorResponse(
                 error: RPCErrorObject(code: RPCErrorCode.featureDisabled, message: "Extensions are disabled"),
                 id: id
             )
         }
 
-        let bi = params?["bundleIdentifier"]?.stringValue ?? bundleIdentifier
-        let entry = authorizationManager.ensureEntryExists(bundleIdentifier: bi, appName: bi)
+        let entry = authorizationManager.ensureEntryExists(
+            bundleIdentifier: bundleIdentifier,
+            appName: bundleIdentifier
+        )
+        logDiagnostics("RPC client \(bundleIdentifier) requested authorization (status: \(entry.status.rawValue))")
 
-        if entry.isAuthorized {
-            return RPCSuccessResponse(result: ["authorized": .bool(true)], id: id)
-        }
-
-        // Auto-authorize for now (user can revoke in settings)
-        authorizationManager.authorize(bundleIdentifier: bi, appName: bi)
-        logDiagnostics("Authorized RPC client \(bi)")
-
-        return RPCSuccessResponse(result: ["authorized": .bool(true)], id: id)
+        return RPCSuccessResponse(
+            result: ["authorized": .bool(authorizationManager.isBundleAuthorized(bundleIdentifier))],
+            id: id
+        )
     }
 
     private func handleCheckAuthorization(params: RPCParams?, id: String) -> Codable {
-        let bi = params?["bundleIdentifier"]?.stringValue ?? bundleIdentifier
-
-        guard Defaults[.enableThirdPartyExtensions] else {
+        guard authorizationManager.isExtensionsFeatureEnabled else {
             return RPCSuccessResponse(result: ["authorized": .bool(false)], id: id)
         }
 
-        let entry = authorizationManager.authorizationEntry(for: bi)
-        let authorized = entry?.isAuthorized ?? false
+        let authorized = authorizationManager.isBundleAuthorized(bundleIdentifier)
 
         return RPCSuccessResponse(result: ["authorized": .bool(authorized)], id: id)
     }
@@ -181,9 +185,12 @@ final class ExtensionRPCService {
         do {
             let transformed = Self.transformClientJSON(descriptorData)
             let descriptor = try decoder.decode(AtollLiveActivityDescriptor.self, from: transformed)
+            guard descriptor.bundleIdentifier == bundleIdentifier else {
+                return errorResponse(code: RPCErrorCode.invalidParams, message: "Bundle identifier mismatch", id: id)
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
-            try liveActivityManager.present(descriptor: descriptor, bundleIdentifier: descriptor.bundleIdentifier)
-            logDiagnostics("RPC: Presented live activity \(descriptor.id) for \(descriptor.bundleIdentifier)")
+            try liveActivityManager.present(descriptor: descriptor, bundleIdentifier: bundleIdentifier)
+            logDiagnostics("RPC: Presented live activity \(descriptor.id) for \(bundleIdentifier)")
             return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
         } catch let error as ExtensionValidationError {
             return errorResponse(from: error, id: id)
@@ -202,8 +209,11 @@ final class ExtensionRPCService {
         do {
             let transformed = Self.transformClientJSON(descriptorData)
             let descriptor = try decoder.decode(AtollLiveActivityDescriptor.self, from: transformed)
-            try liveActivityManager.update(descriptor: descriptor, bundleIdentifier: descriptor.bundleIdentifier)
-            logDiagnostics("RPC: Updated live activity \(descriptor.id) for \(descriptor.bundleIdentifier)")
+            guard descriptor.bundleIdentifier == bundleIdentifier else {
+                return errorResponse(code: RPCErrorCode.invalidParams, message: "Bundle identifier mismatch", id: id)
+            }
+            try liveActivityManager.update(descriptor: descriptor, bundleIdentifier: bundleIdentifier)
+            logDiagnostics("RPC: Updated live activity \(descriptor.id) for \(bundleIdentifier)")
             return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
         } catch let error as ExtensionValidationError {
             return errorResponse(from: error, id: id)
@@ -214,12 +224,14 @@ final class ExtensionRPCService {
     }
 
     private func handleDismissLiveActivity(params: RPCParams?, id: String) -> Codable {
+        guard authorizationManager.canProcessLiveActivityRequest(from: bundleIdentifier) else {
+            return errorResponse(code: RPCErrorCode.unauthorized, message: "Live activity access is not authorized", id: id)
+        }
         guard let activityID = params?["activityID"]?.stringValue else {
             return errorResponse(code: RPCErrorCode.invalidParams, message: "Missing activityID", id: id)
         }
-        let bi = params?["bundleIdentifier"]?.stringValue ?? bundleIdentifier
-        liveActivityManager.dismiss(activityID: activityID, bundleIdentifier: bi)
-        logDiagnostics("RPC: Dismissed live activity \(activityID) for \(bi)")
+        liveActivityManager.dismiss(activityID: activityID, bundleIdentifier: bundleIdentifier)
+        logDiagnostics("RPC: Dismissed live activity \(activityID) for \(bundleIdentifier)")
         return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
     }
 
@@ -233,9 +245,12 @@ final class ExtensionRPCService {
         do {
             let transformed = Self.transformClientJSON(descriptorData)
             let descriptor = try decoder.decode(AtollLockScreenWidgetDescriptor.self, from: transformed)
+            guard descriptor.bundleIdentifier == bundleIdentifier else {
+                return errorResponse(code: RPCErrorCode.invalidParams, message: "Bundle identifier mismatch", id: id)
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
-            try widgetManager.present(descriptor: descriptor, bundleIdentifier: descriptor.bundleIdentifier)
-            logDiagnostics("RPC: Presented widget \(descriptor.id) for \(descriptor.bundleIdentifier)")
+            try widgetManager.present(descriptor: descriptor, bundleIdentifier: bundleIdentifier)
+            logDiagnostics("RPC: Presented widget \(descriptor.id) for \(bundleIdentifier)")
             return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
         } catch let error as ExtensionValidationError {
             return errorResponse(from: error, id: id)
@@ -254,8 +269,11 @@ final class ExtensionRPCService {
         do {
             let transformed = Self.transformClientJSON(descriptorData)
             let descriptor = try decoder.decode(AtollLockScreenWidgetDescriptor.self, from: transformed)
-            try widgetManager.update(descriptor: descriptor, bundleIdentifier: descriptor.bundleIdentifier)
-            logDiagnostics("RPC: Updated widget \(descriptor.id) for \(descriptor.bundleIdentifier)")
+            guard descriptor.bundleIdentifier == bundleIdentifier else {
+                return errorResponse(code: RPCErrorCode.invalidParams, message: "Bundle identifier mismatch", id: id)
+            }
+            try widgetManager.update(descriptor: descriptor, bundleIdentifier: bundleIdentifier)
+            logDiagnostics("RPC: Updated widget \(descriptor.id) for \(bundleIdentifier)")
             return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
         } catch let error as ExtensionValidationError {
             return errorResponse(from: error, id: id)
@@ -266,12 +284,14 @@ final class ExtensionRPCService {
     }
 
     private func handleDismissLockScreenWidget(params: RPCParams?, id: String) -> Codable {
+        guard authorizationManager.canProcessLockScreenRequest(from: bundleIdentifier) else {
+            return errorResponse(code: RPCErrorCode.unauthorized, message: "Lock screen widget access is not authorized", id: id)
+        }
         guard let widgetID = params?["widgetID"]?.stringValue else {
             return errorResponse(code: RPCErrorCode.invalidParams, message: "Missing widgetID", id: id)
         }
-        let bi = params?["bundleIdentifier"]?.stringValue ?? bundleIdentifier
-        widgetManager.dismiss(widgetID: widgetID, bundleIdentifier: bi)
-        logDiagnostics("RPC: Dismissed widget \(widgetID) for \(bi)")
+        widgetManager.dismiss(widgetID: widgetID, bundleIdentifier: bundleIdentifier)
+        logDiagnostics("RPC: Dismissed widget \(widgetID) for \(bundleIdentifier)")
         return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
     }
 
@@ -285,9 +305,12 @@ final class ExtensionRPCService {
         do {
             let transformed = Self.transformClientJSON(descriptorData)
             let descriptor = try decoder.decode(AtollNotchExperienceDescriptor.self, from: transformed)
+            guard descriptor.bundleIdentifier == bundleIdentifier else {
+                return errorResponse(code: RPCErrorCode.invalidParams, message: "Bundle identifier mismatch", id: id)
+            }
             try ExtensionDescriptorValidator.validate(descriptor)
-            try notchManager.present(descriptor: descriptor, bundleIdentifier: descriptor.bundleIdentifier)
-            logDiagnostics("RPC: Presented notch experience \(descriptor.id) for \(descriptor.bundleIdentifier)")
+            try notchManager.present(descriptor: descriptor, bundleIdentifier: bundleIdentifier)
+            logDiagnostics("RPC: Presented notch experience \(descriptor.id) for \(bundleIdentifier)")
             return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
         } catch let error as ExtensionValidationError {
             return errorResponse(from: error, id: id)
@@ -306,8 +329,11 @@ final class ExtensionRPCService {
         do {
             let transformed = Self.transformClientJSON(descriptorData)
             let descriptor = try decoder.decode(AtollNotchExperienceDescriptor.self, from: transformed)
-            try notchManager.update(descriptor: descriptor, bundleIdentifier: descriptor.bundleIdentifier)
-            logDiagnostics("RPC: Updated notch experience \(descriptor.id) for \(descriptor.bundleIdentifier)")
+            guard descriptor.bundleIdentifier == bundleIdentifier else {
+                return errorResponse(code: RPCErrorCode.invalidParams, message: "Bundle identifier mismatch", id: id)
+            }
+            try notchManager.update(descriptor: descriptor, bundleIdentifier: bundleIdentifier)
+            logDiagnostics("RPC: Updated notch experience \(descriptor.id) for \(bundleIdentifier)")
             return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
         } catch let error as ExtensionValidationError {
             return errorResponse(from: error, id: id)
@@ -318,12 +344,14 @@ final class ExtensionRPCService {
     }
 
     private func handleDismissNotchExperience(params: RPCParams?, id: String) -> Codable {
+        guard authorizationManager.canProcessNotchExperienceRequest(from: bundleIdentifier) else {
+            return errorResponse(code: RPCErrorCode.unauthorized, message: "Notch experience access is not authorized", id: id)
+        }
         guard let experienceID = params?["experienceID"]?.stringValue else {
             return errorResponse(code: RPCErrorCode.invalidParams, message: "Missing experienceID", id: id)
         }
-        let bi = params?["bundleIdentifier"]?.stringValue ?? bundleIdentifier
-        notchManager.dismiss(experienceID: experienceID, bundleIdentifier: bi)
-        logDiagnostics("RPC: Dismissed notch experience \(experienceID) for \(bi)")
+        notchManager.dismiss(experienceID: experienceID, bundleIdentifier: bundleIdentifier)
+        logDiagnostics("RPC: Dismissed notch experience \(experienceID) for \(bundleIdentifier)")
         return RPCSuccessResponse(result: ["success": .bool(true)], id: id)
     }
 
@@ -361,20 +389,49 @@ final class ExtensionRPCService {
     // MARK: - File Sharing Authorization Check
 
     private func checkFileSharingAuthorization(id: String) -> RPCErrorResponse? {
-        guard Defaults[.enableThirdPartyExtensions] else {
+        guard authorizationManager.isExtensionsFeatureEnabled else {
             return errorResponse(code: RPCErrorCode.featureDisabled, message: "Extensions are disabled", id: id)
         }
-        guard Defaults[.enableExtensionFileSharing] else {
+        guard authorizationManager.isFileSharingEnabled else {
             return errorResponse(code: RPCErrorCode.featureDisabled, message: "Extension file sharing is disabled", id: id)
         }
-        let entry = authorizationManager.authorizationEntry(for: bundleIdentifier)
-        guard entry?.isAuthorized == true else {
-            return errorResponse(code: RPCErrorCode.unauthorized, message: "Extension not authorized", id: id)
-        }
-        guard entry?.allowedScopes.contains(.fileSharing) == true else {
-            return errorResponse(code: RPCErrorCode.unauthorized, message: "File sharing scope not granted", id: id)
+        guard authorizationManager.canProcessFileSharingRequest(from: bundleIdentifier) else {
+            return errorResponse(code: RPCErrorCode.unauthorized, message: "File sharing access not granted", id: id)
         }
         return nil
+    }
+
+    private static func isValidShelfFileName(_ fileName: String) -> Bool {
+        guard !fileName.isEmpty,
+              fileName.utf8.count <= 255,
+              fileName != ".",
+              fileName != "..",
+              !fileName.contains("/"),
+              !fileName.contains("\\"),
+              !fileName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            return false
+        }
+        return URL(fileURLWithPath: fileName).lastPathComponent == fileName
+    }
+
+    private func shelfItemDataResponse(
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        id: String
+    ) -> Codable {
+        guard data.count <= Self.maximumShelfItemDataSize else {
+            return errorResponse(
+                code: RPCErrorCode.unsupported,
+                message: "Shelf item exceeds the 64 MiB transfer limit",
+                id: id
+            )
+        }
+        return RPCSuccessResponse(result: [
+            "data": .string(data.base64EncodedString()),
+            "fileName": .string(fileName),
+            "mimeType": .string(mimeType)
+        ], id: id)
     }
 
     // MARK: - File Sharing Handlers
@@ -438,34 +495,65 @@ final class ExtensionRPCService {
             guard let url = result.url else {
                 return errorResponse(code: RPCErrorCode.internalError, message: "Cannot resolve file bookmark", id: id)
             }
-            // Read file data off MainActor
-            let fileData = await Task.detached(priority: .userInitiated) { [url] in
-                url.accessSecurityScopedResource { url in
-                    try? Data(contentsOf: url)
+            let maximumDataSize = Self.maximumShelfItemDataSize
+            let fileReadResult = await Task.detached(priority: .userInitiated) { [url] in
+                url.accessSecurityScopedResource { scopedURL -> ShelfFileReadResult in
+                    guard let attributes = try? FileManager.default.attributesOfItem(atPath: scopedURL.path),
+                          attributes[.type] as? FileAttributeType == .typeRegular,
+                          let fileSize = attributes[.size] as? NSNumber else {
+                        return .unavailable
+                    }
+                    guard fileSize.uint64Value <= UInt64(maximumDataSize) else {
+                        return .tooLarge
+                    }
+
+                    do {
+                        let fileHandle = try FileHandle(forReadingFrom: scopedURL)
+                        defer { try? fileHandle.close() }
+                        let data = try fileHandle.read(upToCount: maximumDataSize + 1) ?? Data()
+                        guard data.count <= maximumDataSize else { return .tooLarge }
+                        return .data(data)
+                    } catch {
+                        return .unavailable
+                    }
                 }
             }.value
-            guard let data = fileData else {
+
+            let data: Data
+            switch fileReadResult {
+            case .data(let fileData):
+                data = fileData
+            case .tooLarge:
+                return errorResponse(
+                    code: RPCErrorCode.unsupported,
+                    message: "Shelf item exceeds the 64 MiB transfer limit",
+                    id: id
+                )
+            case .unavailable:
                 return errorResponse(code: RPCErrorCode.internalError, message: "Cannot read file data", id: id)
             }
-            let base64 = data.base64EncodedString()
+
             logDiagnostics("RPC: getShelfItemData returned \(data.count) bytes for \(bundleIdentifier)")
-            return RPCSuccessResponse(result: [
-                "data": .string(base64),
-                "fileName": .string(url.lastPathComponent),
-                "mimeType": .string(url.mimeType ?? "application/octet-stream")
-            ], id: id)
+            return shelfItemDataResponse(
+                data: data,
+                fileName: url.lastPathComponent,
+                mimeType: url.mimeType ?? "application/octet-stream",
+                id: id
+            )
         case .text(let string):
-            return RPCSuccessResponse(result: [
-                "data": .string(Data(string.utf8).base64EncodedString()),
-                "fileName": .string("text.txt"),
-                "mimeType": .string("text/plain")
-            ], id: id)
+            return shelfItemDataResponse(
+                data: Data(string.utf8),
+                fileName: "text.txt",
+                mimeType: "text/plain",
+                id: id
+            )
         case .link(let url):
-            return RPCSuccessResponse(result: [
-                "data": .string(Data(url.absoluteString.utf8).base64EncodedString()),
-                "fileName": .string("link.url"),
-                "mimeType": .string("text/uri-list")
-            ], id: id)
+            return shelfItemDataResponse(
+                data: Data(url.absoluteString.utf8),
+                fileName: "link.url",
+                mimeType: "text/uri-list",
+                id: id
+            )
         }
     }
 
@@ -540,21 +628,6 @@ final class ExtensionRPCService {
         var newItems: [ShelfItem] = []
         var newItemIDs: [RPCValue] = []
 
-        // Handle file paths
-        if let pathsValue = params?["paths"],
-           case .array(let pathArray) = pathsValue {
-            for pathValue in pathArray {
-                guard let path = pathValue.stringValue else { continue }
-                let url = URL(fileURLWithPath: path)
-                guard FileManager.default.fileExists(atPath: path) else { continue }
-                if let bookmark = try? Bookmark(url: url) {
-                    let item = ShelfItem(kind: .file(bookmark: bookmark.data))
-                    newItems.append(item)
-                    newItemIDs.append(.string(item.id.uuidString))
-                }
-            }
-        }
-
         // Handle base64-encoded file data
         if let filesValue = params?["files"],
            case .array(let filesArray) = filesValue {
@@ -562,18 +635,39 @@ final class ExtensionRPCService {
                 guard case .object(let fileObj) = fileValue,
                       let dataStr = fileObj["data"]?.stringValue,
                       let fileName = fileObj["fileName"]?.stringValue,
+                      Self.isValidShelfFileName(fileName),
                       let fileData = Data(base64Encoded: dataStr) else { continue }
 
-                let tempDir = FileManager.default.temporaryDirectory
+                let fileManager = FileManager.default
+                let storageRoot = fileManager.temporaryDirectory
                     .appendingPathComponent("AtollExtensionFiles", isDirectory: true)
-                try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-                let fileURL = tempDir.appendingPathComponent(fileName)
-                guard (try? fileData.write(to: fileURL)) != nil else { continue }
+                let itemDirectory = storageRoot
+                    .appendingPathComponent(UUID().uuidString, isDirectory: true)
+                var itemDirectoryCreated = false
 
-                if let bookmark = try? Bookmark(url: fileURL) {
+                do {
+                    try fileManager.createDirectory(
+                        at: storageRoot,
+                        withIntermediateDirectories: true,
+                        attributes: [.posixPermissions: 0o700]
+                    )
+                    try fileManager.createDirectory(
+                        at: itemDirectory,
+                        withIntermediateDirectories: false,
+                        attributes: [.posixPermissions: 0o700]
+                    )
+                    itemDirectoryCreated = true
+
+                    let fileURL = itemDirectory.appendingPathComponent(fileName, isDirectory: false)
+                    try fileData.write(to: fileURL, options: .atomic)
+                    let bookmark = try Bookmark(url: fileURL)
                     let item = ShelfItem(kind: .file(bookmark: bookmark.data), isTemporary: true)
                     newItems.append(item)
                     newItemIDs.append(.string(item.id.uuidString))
+                } catch {
+                    if itemDirectoryCreated {
+                        try? fileManager.removeItem(at: itemDirectory)
+                    }
                 }
             }
         }
@@ -593,7 +687,10 @@ final class ExtensionRPCService {
     private func handleSubscribeShelfEvents(params: RPCParams?, id: String) -> Codable {
         if let err = checkFileSharingAuthorization(id: id) { return err }
 
-        server?.registerShelfSubscription(for: bundleIdentifier)
+        guard let connectionID,
+              server?.registerShelfSubscription(connectionID: connectionID) == true else {
+            return errorResponse(code: RPCErrorCode.unauthorized, message: "Shelf event subscription is not authorized", id: id)
+        }
         logDiagnostics("RPC: subscribeShelfEvents registered for \(bundleIdentifier)")
         return RPCSuccessResponse(result: ["subscribed": .bool(true)], id: id)
     }

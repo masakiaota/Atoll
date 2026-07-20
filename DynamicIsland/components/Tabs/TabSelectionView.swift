@@ -46,6 +46,7 @@ struct TabModel: Identifiable {
 struct TabSelectionView: View {
     @ObservedObject var coordinator = DynamicIslandViewCoordinator.shared
     @ObservedObject private var extensionNotchExperienceManager = ExtensionNotchExperienceManager.shared
+    @ObservedObject private var extensionAuthorizationManager = ExtensionAuthorizationManager.shared
     @StateObject private var quickShareService = QuickShareService.shared
     @Default(.quickShareProvider) private var quickShareProvider
     @State private var showQuickSharePopover = false
@@ -53,9 +54,6 @@ struct TabSelectionView: View {
     @Default(.enableStatsFeature) var enableStatsFeature
     @Default(.enableColorPickerFeature) var enableColorPickerFeature
     @Default(.timerDisplayMode) var timerDisplayMode
-    @Default(.enableThirdPartyExtensions) private var enableThirdPartyExtensions
-    @Default(.enableExtensionNotchExperiences) private var enableExtensionNotchExperiences
-    @Default(.enableExtensionNotchTabs) private var enableExtensionNotchTabs
     @Default(.showCalendar) private var showCalendar
     @Default(.showMirror) private var showMirror
     @Default(.showStandardMediaControls) private var showStandardMediaControls
@@ -152,7 +150,9 @@ struct TabSelectionView: View {
     }
 
     private var extensionTabsEnabled: Bool {
-        enableThirdPartyExtensions && enableExtensionNotchExperiences && enableExtensionNotchTabs
+        extensionAuthorizationManager.isExtensionsFeatureEnabled
+            && extensionAuthorizationManager.areNotchExperiencesEnabled
+            && extensionAuthorizationManager.areNotchTabsEnabled
     }
 
     private var extensionTabPayloads: [ExtensionNotchExperiencePayload] {

@@ -100,6 +100,7 @@ struct ExpandedItem {
     var autoHideDuration: TimeInterval? = nil
 }
 
+@MainActor
 class DynamicIslandViewCoordinator: ObservableObject {
     static let shared = DynamicIslandViewCoordinator()
     private var cancellables = Set<AnyCancellable>()
@@ -169,6 +170,7 @@ class DynamicIslandViewCoordinator: ObservableObject {
 
     @Published var optionKeyPressed: Bool = true
     private let extensionNotchExperienceManager = ExtensionNotchExperienceManager.shared
+    private let extensionAuthorizationManager = ExtensionAuthorizationManager.shared
     
     private init() {
         selectedScreen = preferredScreen
@@ -320,9 +322,9 @@ class DynamicIslandViewCoordinator: ObservableObject {
     }
 
     private var extensionTabsAllowed: Bool {
-        Defaults[.enableThirdPartyExtensions]
-        && Defaults[.enableExtensionNotchExperiences]
-        && Defaults[.enableExtensionNotchTabs]
+        extensionAuthorizationManager.isExtensionsFeatureEnabled
+        && extensionAuthorizationManager.areNotchExperiencesEnabled
+        && extensionAuthorizationManager.areNotchTabsEnabled
     }
     
     func toggleSneakPeek(

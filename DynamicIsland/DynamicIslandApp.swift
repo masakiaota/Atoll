@@ -54,22 +54,6 @@ struct DynamicNotchApp: App {
             }
             CheckForUpdatesView(updater: updaterController.updater)
             Divider()
-            Button("Restart Atoll") {
-                guard let bundleIdentifier = Bundle.main.bundleIdentifier else { return }
-
-                let workspace = NSWorkspace.shared
-
-                if let appURL = workspace.urlForApplication(withBundleIdentifier: bundleIdentifier)
-                {
-
-                    let configuration = NSWorkspace.OpenConfiguration()
-                    configuration.createsNewApplicationInstance = true
-
-                    workspace.openApplication(at: appURL, configuration: configuration)
-                }
-
-                NSApplication.shared.terminate(self)
-            }
             Button("Quit", role: .destructive) {
                 NSApplication.shared.terminate(self)
             }
@@ -100,6 +84,9 @@ extension AppDelegate {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    // Run before shared managers are initialized so legacy high-risk settings
+    // cannot start services or bundled executables during launch.
+    private let securityDefaultsMigration: Void = Defaults.Keys.migrateP1SecurityDefaults()
     var statusItem: NSStatusItem?
     var windows: [NSScreen: NSWindow] = [:]
     var viewModels: [NSScreen: DynamicIslandViewModel] = [:]
@@ -117,6 +104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let lockScreenPanelManager = LockScreenPanelManager.shared  // NEW: Lock screen music panel
     let mediaControlsStateCoordinator = MediaControlsStateCoordinator.shared
     let systemTimerBridge = SystemTimerBridge.shared
+    let extensionAuthorizationManager = ExtensionAuthorizationManager.shared
     let extensionXPCServiceHost = ExtensionXPCServiceHost.shared
     let extensionRPCServer = ExtensionRPCServer.shared
     var closeNotchWorkItem: DispatchWorkItem?
@@ -125,6 +113,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var windowsHiddenForLock = false
     private var optionalShortcutHandlersRegistered = false
+    private var rejectedDuplicateLaunch = false
     private weak var focusWithoutDevToolsMenuItem: NSMenuItem?
     private weak var focusUseDevToolsMenuItem: NSMenuItem?
     
@@ -156,6 +145,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
+    }
+
+    /// Security state is intentionally process-local after it is loaded from
+    /// the Data Protection Keychain. Keep that model simple and deterministic:
+    /// Atoll supports one running instance per bundle identifier.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            return
+        }
+
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        guard let existingInstance = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier)
+            .first(where: { $0.processIdentifier != currentPID }) else {
+            return
+        }
+
+        rejectedDuplicateLaunch = true
+        existingInstance.activate(options: [.activateAllWindows])
+        NSApplication.shared.terminate(nil)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -577,6 +586,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !rejectedDuplicateLaunch else {
+            NSApplication.shared.terminate(nil)
+            return
+        }
+
+        // This process is now the sole Atoll instance. Refresh the Keychain
+        // authority in case it was suspended after its earlier cache load.
+        extensionAuthorizationManager.reloadSecurityAuthorityBeforeServing()
+
         let userInfo: [String: Any] = [
             AtollDistributedNotifications.UserInfoKey.sourcePID: NSNumber(value: ProcessInfo.processInfo.processIdentifier)
         ]
@@ -590,7 +608,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         LockScreenLiveActivityWindowManager.shared.configure(viewModel: vm)
         LockScreenManager.shared.configure(viewModel: vm)
         extensionXPCServiceHost.start()
-        extensionRPCServer.start()
+        refreshExtensionRPCServiceState(extensionAuthorizationManager.isExtensionsFeatureEnabled)
+
+        Defaults.publisher(.enableThirdPartyExtensions, options: [])
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.refreshExtensionRPCServiceState(
+                        self.extensionAuthorizationManager.isExtensionsFeatureEnabled
+                    )
+                }
+            }
+            .store(in: &cancellables)
+
+        Defaults.publisher(.enableExtensionLiveActivities, options: [])
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          !self.extensionAuthorizationManager.areLiveActivitiesEnabled else { return }
+                    self.clearExtensionLiveActivities()
+                }
+            }
+            .store(in: &cancellables)
+
+        Defaults.publisher(.enableExtensionLockScreenWidgets, options: [])
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          !self.extensionAuthorizationManager.areLockScreenWidgetsEnabled else { return }
+                    self.clearExtensionLockScreenWidgets()
+                }
+            }
+            .store(in: &cancellables)
+
+        Defaults.publisher(.enableExtensionNotchExperiences, options: [])
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          !self.extensionAuthorizationManager.areNotchExperiencesEnabled else { return }
+                    self.clearExtensionNotchExperiences()
+                }
+            }
+            .store(in: &cancellables)
         
         // Migrate legacy progress bar settings
         Defaults.Keys.migrateProgressBarStyle()
@@ -945,6 +1004,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let timerWidgetManager = LockScreenTimerWidgetManager.shared
         timerWidgetManager.handleLockStateChange(isLocked: LockScreenManager.shared.currentLockStatus)
 
+    }
+
+    @MainActor
+    private func refreshExtensionRPCServiceState(_ enabled: Bool) {
+        if enabled {
+            extensionRPCServer.start()
+        } else {
+            extensionRPCServer.stop()
+            clearExtensionContent()
+        }
+    }
+
+    @MainActor
+    private func clearExtensionContent() {
+        clearExtensionLiveActivities()
+        clearExtensionLockScreenWidgets()
+        clearExtensionNotchExperiences()
+    }
+
+    @MainActor
+    private func clearExtensionLiveActivities() {
+        Set(ExtensionLiveActivityManager.shared.activeActivities.map(\.bundleIdentifier)).forEach {
+            ExtensionLiveActivityManager.shared.dismissAll(for: $0)
+        }
+    }
+
+    @MainActor
+    private func clearExtensionLockScreenWidgets() {
+        Set(ExtensionLockScreenWidgetManager.shared.activeWidgets.map(\.bundleIdentifier)).forEach {
+            ExtensionLockScreenWidgetManager.shared.dismissAll(for: $0)
+        }
+    }
+
+    @MainActor
+    private func clearExtensionNotchExperiences() {
+        Set(ExtensionNotchExperienceManager.shared.activeExperiences.map(\.bundleIdentifier)).forEach {
+            ExtensionNotchExperienceManager.shared.dismissAll(for: $0)
+        }
     }
 
     private func installTopMenuItemsIfNeeded() {

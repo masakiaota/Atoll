@@ -179,6 +179,13 @@ struct ExtensionAuthorizationEntry: Codable, Defaults.Serializable, Identifiable
     var lastActivityAt: Date?
     var lastDeniedReason: String?
     var notes: String?
+    /// Designated requirement explicitly approved for XPC access. Bundle IDs
+    /// alone are not an identity boundary because another app can reuse one.
+    var trustedXPCCodeSigningRequirement: String?
+    var trustedXPCApplicationPath: String?
+    /// A changed or first-seen XPC identity awaiting an explicit UI decision.
+    var pendingXPCCodeSigningRequirement: String?
+    var pendingXPCApplicationPath: String?
 
     var id: String { bundleIdentifier }
 
@@ -186,12 +193,16 @@ struct ExtensionAuthorizationEntry: Codable, Defaults.Serializable, Identifiable
         bundleIdentifier: String,
         appName: String,
         status: ExtensionAuthorizationStatus,
-        allowedScopes: Set<ExtensionPermissionScope> = Set(ExtensionPermissionScope.allCases),
+        allowedScopes: Set<ExtensionPermissionScope> = [.liveActivities, .lockScreenWidgets, .notchExperiences],
         requestedAt: Date = .now,
         grantedAt: Date? = nil,
         lastActivityAt: Date? = nil,
         lastDeniedReason: String? = nil,
-        notes: String? = nil
+        notes: String? = nil,
+        trustedXPCCodeSigningRequirement: String? = nil,
+        trustedXPCApplicationPath: String? = nil,
+        pendingXPCCodeSigningRequirement: String? = nil,
+        pendingXPCApplicationPath: String? = nil
     ) {
         self.bundleIdentifier = bundleIdentifier
         self.appName = appName
@@ -202,6 +213,10 @@ struct ExtensionAuthorizationEntry: Codable, Defaults.Serializable, Identifiable
         self.lastActivityAt = lastActivityAt
         self.lastDeniedReason = lastDeniedReason
         self.notes = notes
+        self.trustedXPCCodeSigningRequirement = trustedXPCCodeSigningRequirement
+        self.trustedXPCApplicationPath = trustedXPCApplicationPath
+        self.pendingXPCCodeSigningRequirement = pendingXPCCodeSigningRequirement
+        self.pendingXPCApplicationPath = pendingXPCApplicationPath
     }
 
     var isAuthorized: Bool { status.isActive }
@@ -418,6 +433,16 @@ enum MediaControllerType: String, CaseIterable, Identifiable, Defaults.Serializa
         case .youtubeMusic: return String(localized: "Youtube Music")
         case .amazonMusic: return String(localized: "Amazon Music")
         case .cider: return String(localized: "Cider")
+        }
+    }
+
+    /// These sources execute the bundled MediaRemote adapter process.
+    var requiresBundledMediaRemoteAdapter: Bool {
+        switch self {
+        case .nowPlaying, .amazonMusic, .cider:
+            return true
+        case .appleMusic, .spotify, .youtubeMusic:
+            return false
         }
     }
 }
@@ -1072,6 +1097,7 @@ extension Defaults.Keys {
     
     // MARK: Media Controller
     static let mediaController = Key<MediaControllerType>("mediaController", default: defaultMediaController)
+    static let allowBundledMediaRemoteAdapter = Key<Bool>("allowBundledMediaRemoteAdapter", default: false)
     static let spotifySPDCCookie = Key<String>("spotifySPDCCookie", default: "")
     static let spotifyAuthAccessToken = Key<String>("spotifyAuthAccessToken", default: "")
     static let spotifyAuthAccessTokenExpiration = Key<Double>("spotifyAuthAccessTokenExpiration", default: 0)
@@ -1169,7 +1195,7 @@ extension Defaults.Keys {
     static let localModelEndpoint = Key<String>("localModelEndpoint", default: "http://localhost:11434")
 
     // MARK: Third-Party Extensions
-    static let enableThirdPartyExtensions = Key<Bool>("enableThirdPartyExtensions", default: true)
+    static let enableThirdPartyExtensions = Key<Bool>("enableThirdPartyExtensions", default: false)
     static let enableExtensionLiveActivities = Key<Bool>("enableExtensionLiveActivities", default: true)
     static let enableExtensionLockScreenWidgets = Key<Bool>("enableExtensionLockScreenWidgets", default: true)
     static let enableExtensionNotchExperiences = Key<Bool>("enableExtensionNotchExperiences", default: true)
@@ -1182,7 +1208,8 @@ extension Defaults.Keys {
     static let extensionLiveActivityCapacity = Key<Int>("extensionLiveActivityCapacity", default: 4)
     static let extensionLockScreenWidgetCapacity = Key<Int>("extensionLockScreenWidgetCapacity", default: 4)
     static let extensionNotchExperienceCapacity = Key<Int>("extensionNotchExperienceCapacity", default: 2)
-    static let enableExtensionFileSharing = Key<Bool>("enableExtensionFileSharing", default: true)
+    static let enableExtensionFileSharing = Key<Bool>("enableExtensionFileSharing", default: false)
+    static let didApplyP1SecurityDefaults = Key<Bool>("didApplyP1SecurityDefaults", default: false)
     
     // MARK: Keyboard Shortcuts
     static let enableShortcuts = Key<Bool>("enableShortcuts", default: true)
@@ -1304,13 +1331,35 @@ extension Defaults.Keys {
     static let enableAppleNotesSync = Key<Bool>("enableAppleNotesSync", default: false)
     static let appleNotesLastSyncDate = Key<Date?>("appleNotesLastSyncDate", default: nil)
     
-    // Helper to determine the default media controller based on macOS version
+    // Safe default that does not execute the bundled compatibility adapter.
     static var defaultMediaController: MediaControllerType {
-        if #available(macOS 15.4, *) {
-            return .appleMusic
-        } else {
-            return .nowPlaying
+        .appleMusic
+    }
+
+    /// Applies secure defaults once to existing installations. High-risk features
+    /// must be explicitly re-enabled after the update.
+    static func migrateP1SecurityDefaults() {
+        guard Defaults[.didApplyP1SecurityDefaults] == false else { return }
+
+        Defaults[.enableThirdPartyExtensions] = false
+        Defaults[.enableExtensionFileSharing] = false
+        Defaults[.allowBundledMediaRemoteAdapter] = false
+
+        if Defaults[.mediaController].requiresBundledMediaRemoteAdapter {
+            Defaults[.mediaController] = .appleMusic
         }
+
+        var entries = Defaults[.extensionAuthorizationEntries]
+        for index in entries.indices {
+            entries[index].allowedScopes.remove(.fileSharing)
+            if entries[index].status == .authorized {
+                entries[index].status = .pending
+                entries[index].grantedAt = nil
+                entries[index].notes = "Reauthorization required after the P1 security update."
+            }
+        }
+        Defaults[.extensionAuthorizationEntries] = entries
+        Defaults[.didApplyP1SecurityDefaults] = true
     }
     
     // Migration helper to convert from legacy enableGradient Boolean to new ProgressBarStyle enum

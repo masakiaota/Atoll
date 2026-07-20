@@ -30,10 +30,10 @@ final class MemoryUsageMonitor {
     private let thresholdBytes: UInt64 = 1_024 * 1_024 * 1_024
 #endif
     private let pollInterval: TimeInterval = 8 // Clamp within 5-10 seconds to limit battery impact
-    private let restartCooldown: TimeInterval = 300
+    private let quitPromptCooldown: TimeInterval = 300
     private let logSampleInterval: TimeInterval = 300
     private var monitorTask: Task<Void, Never>?
-    private var lastRestartAttempt: Date = .distantPast
+    private var lastQuitPrompt: Date = .distantPast
     private var lastLogSample: Date = .distantPast
 
     func startMonitoring() {
@@ -59,54 +59,37 @@ final class MemoryUsageMonitor {
     private func evaluateMemoryFootprint() async {
         guard let usage = currentResidentSize() else { return }
         if usage >= thresholdBytes {
-            restartIfNeeded(currentUsage: usage)
+            promptToQuitIfNeeded(currentUsage: usage)
         } else if Date().timeIntervalSince(lastLogSample) >= logSampleInterval {
             lastLogSample = Date()
             Logger.log("[MemoryMonitor] Resident usage: \(formatMegabytes(usage)) MB", category: .memory)
         }
     }
 
-    private func restartIfNeeded(currentUsage: UInt64) {
+    private func promptToQuitIfNeeded(currentUsage: UInt64) {
         let now = Date()
-        guard now.timeIntervalSince(lastRestartAttempt) >= restartCooldown else {
+        guard now.timeIntervalSince(lastQuitPrompt) >= quitPromptCooldown else {
             Logger.log("[MemoryMonitor] Usage \(formatMegabytes(currentUsage)) MB exceeds threshold but cooldown active", category: .warning)
             return
         }
-        lastRestartAttempt = now
-        Logger.log("[MemoryMonitor] Usage \(formatMegabytes(currentUsage)) MB >= \(formatMegabytes(thresholdBytes)) MB. Prompting for restart.", category: .warning)
-        presentRestartAlert(currentUsage: currentUsage)
+        lastQuitPrompt = now
+        Logger.log("[MemoryMonitor] Usage \(formatMegabytes(currentUsage)) MB >= \(formatMegabytes(thresholdBytes)) MB. Prompting to quit.", category: .warning)
+        presentQuitAlert(currentUsage: currentUsage)
     }
 
-    private func presentRestartAlert(currentUsage: UInt64) {
+    private func presentQuitAlert(currentUsage: UInt64) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "DynamicIsland memory usage is high"
-        alert.informativeText = "The app is currently using \(formatMegabytes(currentUsage)) MB, which exceeds the safe limit of \(formatMegabytes(thresholdBytes)) MB. Restart now to free memory?"
-        alert.addButton(withTitle: "Restart Now")
+        alert.informativeText = "The app is currently using \(formatMegabytes(currentUsage)) MB, which exceeds the safe limit of \(formatMegabytes(thresholdBytes)) MB. Quit now to free memory? You can reopen Atoll normally afterward."
+        alert.addButton(withTitle: "Quit Atoll")
         alert.addButton(withTitle: "Later")
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            relaunchApplication()
+            NSApplication.shared.terminate(nil)
         } else {
-            Logger.log("[MemoryMonitor] Restart postponed by user", category: .warning)
-        }
-    }
-
-    private func relaunchApplication() {
-        let workspace = NSWorkspace.shared
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-
-        let appURL = workspace.urlForApplication(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "") ?? Bundle.main.bundleURL
-
-        workspace.openApplication(at: appURL, configuration: configuration) { _, error in
-            if let error {
-                Logger.log("[MemoryMonitor] Failed to launch replacement app: \(error.localizedDescription)", category: .error)
-            }
-            Task { @MainActor in
-                NSApplication.shared.terminate(nil)
-            }
+            Logger.log("[MemoryMonitor] Quit postponed by user", category: .warning)
         }
     }
 

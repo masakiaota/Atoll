@@ -298,13 +298,13 @@ struct ExtensionWebContentView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.suppressesIncrementalRendering = false
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        configuration.websiteDataStore = .nonPersistent()
         let webView = ConfigurableWKWebView(frame: .zero, configuration: configuration)
         webView.allowInteraction = allowInteraction
         webView.navigationDelegate = context.coordinator
         webView.wantsLayer = true
         applyConfiguration(descriptor, to: webView)
-        context.coordinator.lastHTML = descriptor.html
-        webView.loadHTMLString(descriptor.html, baseURL: nil)
+        context.coordinator.loadDocumentIfNeeded(in: webView)
         return webView
     }
 
@@ -315,10 +315,7 @@ struct ExtensionWebContentView: NSViewRepresentable {
         if let configurableView = webView as? ConfigurableWKWebView {
             configurableView.allowInteraction = allowInteraction
         }
-        if context.coordinator.lastHTML != descriptor.html {
-            webView.loadHTMLString(descriptor.html, baseURL: nil)
-            context.coordinator.lastHTML = descriptor.html
-        }
+        context.coordinator.loadDocumentIfNeeded(in: webView)
     }
 
     private func applyConfiguration(_ descriptor: AtollWidgetWebContentDescriptor, to webView: WKWebView) {
@@ -347,11 +344,66 @@ struct ExtensionWebContentView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        private struct DocumentKey: Equatable {
+            let html: String
+            let networkPolicy: ExtensionWebContentNetworkPolicy
+        }
+
         var descriptor: AtollWidgetWebContentDescriptor
-        var lastHTML: String?
+        private var lastDocumentKey: DocumentKey?
+        private var pendingLoadID: UUID?
 
         init(descriptor: AtollWidgetWebContentDescriptor) {
             self.descriptor = descriptor
+        }
+
+        func loadDocumentIfNeeded(in webView: WKWebView) {
+            let networkPolicy = ExtensionWebContentNetworkPolicy(
+                allowRemoteRequests: allowsRemoteRequests(),
+                allowLocalhostRequests: descriptor.allowLocalhostRequests
+            )
+            let key = DocumentKey(html: descriptor.html, networkPolicy: networkPolicy)
+            guard key != lastDocumentKey else { return }
+
+            lastDocumentKey = key
+            let loadID = UUID()
+            pendingLoadID = loadID
+            let document = ExtensionWebContentSecurityPolicy.makeDocument(
+                sourceHTML: descriptor.html,
+                networkPolicy: networkPolicy
+            )
+            let contentController = webView.configuration.userContentController
+            contentController.removeAllContentRuleLists()
+
+            guard let ruleListIdentifier = ExtensionWebContentSecurityPolicy.networkRuleListIdentifier(for: networkPolicy),
+                  let ruleListJSON = ExtensionWebContentSecurityPolicy.networkRuleListJSON(for: networkPolicy) else {
+                webView.loadHTMLString(document.html, baseURL: nil)
+                return
+            }
+
+            WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: ruleListIdentifier,
+                encodedContentRuleList: ruleListJSON
+            ) { [weak self, weak webView] ruleList, error in
+                DispatchQueue.main.async {
+                    guard let self,
+                          let webView,
+                          self.pendingLoadID == loadID else {
+                        return
+                    }
+                    guard let ruleList else {
+                        logWidgetDiagnostics("Could not install the web request policy: \(error?.localizedDescription ?? "unknown error")")
+                        let blockedDocument = ExtensionWebContentSecurityPolicy.makeDocument(
+                            sourceHTML: "",
+                            networkPolicy: .blocked
+                        )
+                        webView.loadHTMLString(blockedDocument.html, baseURL: nil)
+                        return
+                    }
+                    webView.configuration.userContentController.add(ruleList)
+                    webView.loadHTMLString(document.html, baseURL: nil)
+                }
+            }
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -369,18 +421,16 @@ struct ExtensionWebContentView: NSViewRepresentable {
 
         private func isAllowed(url: URL) -> Bool {
             guard let scheme = url.scheme?.lowercased() else { return false }
-            if scheme == "about" || scheme == "data" {
+            if scheme == "about" || scheme == "data" || scheme == "blob" {
                 return true
             }
-            if (scheme == "http" || scheme == "https") {
-                if allowsRemoteRequests() {
-                    return true
+            if scheme == "http" || scheme == "https" {
+                guard let host = url.host else { return false }
+                if ExtensionWebContentSecurityPolicy.isLoopbackHost(host) {
+                    return descriptor.allowLocalhostRequests
                 }
-                guard descriptor.allowLocalhostRequests else {
-                    return false
-                }
-                let host = url.host?.lowercased()
-                return host == "localhost" || host == "127.0.0.1"
+                guard allowsRemoteRequests() else { return false }
+                return descriptor.allowLocalhostRequests || scheme == "https"
             }
             return false
         }

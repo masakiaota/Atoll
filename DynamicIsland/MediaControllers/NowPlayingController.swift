@@ -22,6 +22,7 @@
 
 import AppKit
 import Combine
+import Defaults
 import Foundation
 
 final class NowPlayingController: ObservableObject, MediaControllerProtocol {
@@ -51,6 +52,7 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     private let MRMediaRemoteSetRepeatModeFunction: @convention(c) (Int) -> Void
 
     private var process: Process?
+    private var preparedFrameworkHandle: FileHandle?
     private var pipeHandler: JSONLinesPipeHandler?
     private var streamTask: Task<Void, Never>?
 
@@ -100,6 +102,8 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
         }
 
         self.process = nil
+        try? preparedFrameworkHandle?.close()
+        preparedFrameworkHandle = nil
         self.pipeHandler = nil
     }
 
@@ -148,21 +152,8 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
     // MARK: - Setup Methods
     private func setupNowPlayingObserver() async {
         let process = Process()
-        guard
-            let scriptURL = Bundle.main.url(forResource: "mediaremote-adapter", withExtension: "pl"),
-            //let frameworkPath = Bundle.main.privateFrameworksPath?.appending("/MediaRemoteAdapter.framework")
-            let frameworkPath =
-                Bundle.main.resourceURL?
-                    .appendingPathComponent("MediaRemoteAdapter.framework")
-                    .path
-
-        else {
-            assertionFailure("Could not find mediaremote-adapter.pl script or framework path")
-            return
-        }
-        
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        process.arguments = [scriptURL.path, frameworkPath, "stream"]
+        MediaRemoteProcessEnvironment.apply(to: process, frameworkFromStandardInput: true)
         
         let pipeHandler = JSONLinesPipeHandler()
         process.standardOutput = await pipeHandler.getPipe()
@@ -179,17 +170,32 @@ final class NowPlayingController: ObservableObject, MediaControllerProtocol {
             else { return }
             print("NowPlayingController [stderr]: \(message)")
         }
-        
-        self.process = process
-        self.pipeHandler = pipeHandler
 
         do {
+            // Revalidate immediately before every launch; do not rely only on
+            // the MusicManager factory gate.
+            let prepared = try MediaRemoteExecutionPolicy.prepareExecution()
+            process.standardInput = prepared.frameworkExecutableHandle
+            process.arguments = [
+                "-e",
+                prepared.scriptSource,
+                "--",
+                prepared.installation.frameworkURL.path,
+                "stream",
+            ]
             try process.run()
+            self.process = process
+            self.preparedFrameworkHandle = prepared.frameworkExecutableHandle
+            self.pipeHandler = pipeHandler
             streamTask = Task { [weak self] in
                 await self?.processJSONStream()
             }
+        } catch let error as MediaRemoteExecutionPolicy.ValidationError {
+            MediaRemoteExecutionPolicy.disableUserConsentAfterValidationFailure()
+            NotificationCenter.default.post(name: .mediaControllerChanged, object: nil)
+            print("NowPlayingController: MediaRemote adapter launch denied: \(error)")
         } catch {
-            assertionFailure("Failed to launch mediaremote-adapter.pl: \(error)")
+            print("NowPlayingController: Failed to launch MediaRemote adapter: \(error)")
         }
     }
 

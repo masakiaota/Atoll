@@ -29,24 +29,8 @@ final class ExtensionLiveActivityManager: ObservableObject {
 
     private let authorizationManager = ExtensionAuthorizationManager.shared
     private let maxCapacityKey = Defaults.Keys.extensionLiveActivityCapacity
-    private let eventBridge = ExtensionEventBridge.shared
-    private var liveActivityObserver: NSObjectProtocol?
-    private var suppressBroadcast = false
-    private let currentProcessID = ProcessInfo.processInfo.processIdentifier
 
-    private init() {
-        activeActivities = eventBridge.loadPersistedLiveActivities()
-        sortActivities()
-        liveActivityObserver = eventBridge.observeLiveActivitySnapshots { [weak self] payloads, sourcePID in
-            self?.applySnapshot(payloads, sourcePID: sourcePID)
-        }
-    }
-
-    deinit {
-        if let token = liveActivityObserver {
-            eventBridge.removeObserver(token)
-        }
-    }
+    private init() {}
 
     func present(descriptor: AtollLiveActivityDescriptor, bundleIdentifier: String) throws {
         guard authorizationManager.canProcessLiveActivityRequest(from: bundleIdentifier) else {
@@ -88,8 +72,6 @@ final class ExtensionLiveActivityManager: ObservableObject {
             isUpdate = false
         }
         
-        broadcastSnapshot()
-        
         // Trigger sneak peek (defaulting to enabled for legacy descriptors)
         let resolvedConfig = descriptor.sneakPeekConfig ?? .default
         if resolvedConfig.enabled {
@@ -101,6 +83,10 @@ final class ExtensionLiveActivityManager: ObservableObject {
     }
 
     func update(descriptor: AtollLiveActivityDescriptor, bundleIdentifier: String) throws {
+        guard authorizationManager.canProcessLiveActivityRequest(from: bundleIdentifier) else {
+            logDiagnostics("Rejected live activity update \(descriptor.id) from \(bundleIdentifier): scope disabled or bundle unauthorized")
+            throw ExtensionValidationError.unauthorized
+        }
         guard descriptor.isValid else {
             logDiagnostics("Rejected live activity update \(descriptor.id) from \(bundleIdentifier): descriptor validation failed")
             throw ExtensionValidationError.invalidDescriptor("Structure validation failed")
@@ -117,7 +103,6 @@ final class ExtensionLiveActivityManager: ObservableObject {
         sortActivities()
         authorizationManager.recordActivity(for: bundleIdentifier, scope: .liveActivities)
         logDiagnostics("Updated live activity \(descriptor.id) for \(bundleIdentifier)")
-        broadcastSnapshot()
     }
 
     func dismiss(activityID: String, bundleIdentifier: String) {
@@ -130,7 +115,6 @@ final class ExtensionLiveActivityManager: ObservableObject {
             ExtensionXPCServiceHost.shared.notifyActivityDismiss(bundleIdentifier: bundleIdentifier, activityID: activityID)
             ExtensionRPCServer.shared.notifyActivityDismiss(bundleIdentifier: bundleIdentifier, activityID: activityID)
             logDiagnostics("Removed live activity \(activityID) for \(bundleIdentifier); remaining: \(activeActivities.count)")
-            broadcastSnapshot()
         }
     }
 
@@ -147,7 +131,6 @@ final class ExtensionLiveActivityManager: ObservableObject {
         }
         if !ids.isEmpty {
             logDiagnostics("Removed all live activities for \(bundleIdentifier); ids: \(ids.joined(separator: ", "))")
-            broadcastSnapshot()
         }
     }
 
@@ -170,20 +153,6 @@ final class ExtensionLiveActivityManager: ObservableObject {
 
     private func sortActivities() {
         activeActivities.sort(by: descriptorComparator)
-    }
-
-    private func broadcastSnapshot() {
-        guard !suppressBroadcast else { return }
-        eventBridge.broadcastLiveActivitySnapshot(activeActivities)
-        logDiagnostics("Broadcasted live activity snapshot (count: \(activeActivities.count))")
-    }
-
-    private func applySnapshot(_ payloads: [ExtensionLiveActivityPayload], sourcePID: Int32) {
-        guard sourcePID != currentProcessID else { return }
-        suppressBroadcast = true
-        activeActivities = payloads.sorted(by: descriptorComparator)
-        suppressBroadcast = false
-        logDiagnostics("Applied external live activity snapshot from PID \(sourcePID) (count: \(payloads.count))")
     }
 
     private func triggerSneakPeek(for descriptor: AtollLiveActivityDescriptor, bundleIdentifier: String, config: AtollSneakPeekConfig) {

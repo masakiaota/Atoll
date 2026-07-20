@@ -26,6 +26,7 @@ import AtollExtensionKit
 @MainActor
 final class ExtensionLockScreenWidgetPresentationController {
     private unowned let manager: ExtensionLockScreenWidgetManager
+    private let authorizationManager = ExtensionAuthorizationManager.shared
     private var cancellables: Set<AnyCancellable> = []
     private let windowPool = ExtensionLockScreenWidgetWindowPool()
     private var cachedPayloads: [ExtensionLockScreenWidgetPayload] = []
@@ -39,7 +40,7 @@ final class ExtensionLockScreenWidgetPresentationController {
     func activate() {
         observeLockState()
         observePayloads()
-        observeDefaults()
+        observeSecurityPolicy()
     }
 
     private func observeLockState() {
@@ -65,12 +66,13 @@ final class ExtensionLockScreenWidgetPresentationController {
             .store(in: &cancellables)
     }
 
-    private func observeDefaults() {
-        Defaults.publisher(.enableExtensionLockScreenWidgets, options: [])
+    private func observeSecurityPolicy() {
+        authorizationManager.$securityPolicy
             .receive(on: RunLoop.main)
-            .sink { [weak self] change in
+            .sink { [weak self] _ in
                 guard let self else { return }
-                if change.newValue {
+                if self.authorizationManager.isExtensionsFeatureEnabled
+                    && self.authorizationManager.areLockScreenWidgetsEnabled {
                     self.refreshPresentation()
                 } else {
                     self.windowPool.hideAll()
@@ -81,7 +83,10 @@ final class ExtensionLockScreenWidgetPresentationController {
     }
 
     private func refreshPresentation() {
-        guard isLocked, LockScreenManager.shared.currentLockStatus, Defaults[.enableExtensionLockScreenWidgets] else {
+        guard isLocked,
+              LockScreenManager.shared.currentLockStatus,
+              authorizationManager.isExtensionsFeatureEnabled,
+              authorizationManager.areLockScreenWidgetsEnabled else {
             windowPool.hideAll()
             updateVisibilityLog(.hidden(reason: "lock-state"))
             return

@@ -2753,6 +2753,7 @@ struct HUD: View {
 struct Media: View {
     @Default(.waitInterval) var waitInterval
     @Default(.mediaController) var mediaController
+    @State private var allowBundledMediaRemoteAdapter = MediaRemoteExecutionPolicy.isUserConsentEnabled()
     @ObservedObject var coordinator = DynamicIslandViewCoordinator.shared
     @Default(.hideNotchOption) var hideNotchOption
     @Default(.enableSneakPeek) private var enableSneakPeek
@@ -2773,6 +2774,8 @@ struct Media: View {
     @Default(.enableWaveformScrubber) private var enableWaveformScrubber
     @Default(.colorExtractionMode) private var colorExtractionMode
     @Default(.parallaxEffectIntensity) private var parallaxEffectIntensity
+    @State private var showingMediaAdapterConfirmation = false
+    @State private var mediaAdapterError: String?
 
     
     @ObservedObject private var musicManager = MusicManager.shared
@@ -2807,15 +2810,14 @@ struct Media: View {
             } header: {
                 Text("Media Source")
             } footer: {
-                if MusicManager.shared.isNowPlayingDeprecated {
-                    HStack {
-                        Text("YouTube Music requires this third-party app to be installed: ")
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                        Link("https://github.com/th-ch/youtube-music", destination: URL(string: "https://github.com/th-ch/youtube-music")!)
-                            .font(.caption)
-                            .foregroundColor(.blue) // Ensures it's visibly a link
-                    }
+                if !allowBundledMediaRemoteAdapter {
+                    Text("Now Playing, Amazon Music, and Cider remain hidden until the bundled compatibility adapter is explicitly enabled below.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else if MusicManager.shared.isNowPlayingDeprecated {
+                    Text("The bundled compatibility adapter is unavailable on this macOS version or failed verification, so its media sources are hidden.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(String(localized: "'Now Playing' was the only option on previous versions and works with all media apps."))
@@ -2824,6 +2826,32 @@ struct Media: View {
                     .foregroundStyle(.secondary)
                     .font(.caption)
                 }
+            }
+
+            Section {
+                Toggle("Enable bundled media compatibility adapter", isOn: Binding(
+                    get: { allowBundledMediaRemoteAdapter },
+                    set: { enabled in
+                        if enabled {
+                            showingMediaAdapterConfirmation = true
+                        } else {
+                            disableBundledMediaAdapter()
+                        }
+                    }
+                ))
+                .settingsHighlight(id: highlightID("Bundled media compatibility adapter"))
+
+                if let mediaAdapterError {
+                    Text(mediaAdapterError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Compatibility Adapter")
+            } footer: {
+                Text("Required only for Now Playing, Amazon Music, and Cider. Enabling it allows Atoll to run its bundled Perl adapter and framework after verifying their exact file hashes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if mediaController == .spotify {
@@ -3082,15 +3110,66 @@ struct Media: View {
             }
         }
         .navigationTitle("Media")
+        .onAppear {
+            allowBundledMediaRemoteAdapter = MediaRemoteExecutionPolicy.isUserConsentEnabled()
+        }
+        .alert("Enable Bundled Compatibility Adapter?", isPresented: $showingMediaAdapterConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Enable") {
+                enableBundledMediaAdapter()
+            }
+        } message: {
+            Text("This runs executable code bundled with Atoll to support additional media apps. Integrity is checked before every launch, but the adapter is not built from source by this project.")
+        }
+        .alert("Compatibility Adapter Unavailable", isPresented: Binding(
+            get: { mediaAdapterError != nil },
+            set: { if !$0 { mediaAdapterError = nil } }
+        )) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(mediaAdapterError ?? "The bundled adapter could not be verified.")
+        }
     }
 
     // Only show controller options that are available on this macOS version
     private var availableMediaControllers: [MediaControllerType] {
-        if MusicManager.shared.isNowPlayingDeprecated {
-            return MediaControllerType.allCases.filter { $0 != .nowPlaying }
-        } else {
-            return MediaControllerType.allCases
+        MediaControllerType.allCases.filter { controller in
+            if controller.requiresBundledMediaRemoteAdapter && !allowBundledMediaRemoteAdapter {
+                return false
+            }
+            if controller.requiresBundledMediaRemoteAdapter && MusicManager.shared.isNowPlayingDeprecated {
+                return false
+            }
+            return true
         }
+    }
+
+    private func enableBundledMediaAdapter() {
+        do {
+            try MediaRemoteExecutionPolicy.setUserConsent(true)
+            allowBundledMediaRemoteAdapter = true
+            try MediaRemoteExecutionPolicy.validateInstallation()
+            mediaAdapterError = nil
+            NotificationCenter.default.post(name: .mediaControllerChanged, object: nil)
+        } catch {
+            MediaRemoteExecutionPolicy.disableUserConsentAfterValidationFailure()
+            allowBundledMediaRemoteAdapter = false
+            mediaAdapterError = "The bundled adapter failed verification and remains disabled: \(error.localizedDescription)"
+        }
+    }
+
+    private func disableBundledMediaAdapter() {
+        do {
+            try MediaRemoteExecutionPolicy.setUserConsent(false)
+            mediaAdapterError = nil
+        } catch {
+            mediaAdapterError = "The adapter is blocked for this session, but its consent record could not be removed: \(error.localizedDescription)"
+        }
+        allowBundledMediaRemoteAdapter = false
+        if mediaController.requiresBundledMediaRemoteAdapter {
+            mediaController = .appleMusic
+        }
+        NotificationCenter.default.post(name: .mediaControllerChanged, object: nil)
     }
 
     private var unavailableBlurRow: some View {

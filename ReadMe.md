@@ -89,6 +89,11 @@ Atoll turns the MacBook notch into a focused command surface for media, system i
 - Remap global shortcuts and adjust hover behaviour.
 - Enable lock screen widgets and select data sources.
 
+## Extension development
+- Local RPC is loopback-only and disabled until the user approves each app in **Settings → Extensions**.
+- New clients must use the mutually authenticated, encrypted [AtollRPC/2 protocol](LOCAL_RPC_PROTOCOL.md). The legacy raw-token handshake is intentionally rejected.
+- Extension presentation payloads are process-local; reconnect and resubmit active content after Atoll relaunches.
+
 ## Gesture Controls
 - Two-finger swipe down to open the notch when hover-to-open is disabled; swipe up to close.
 - Enable horizontal media gestures in **Settings → General → Gesture control** to turn the music pane into a trackpad for previous/next or ±10 second seeks.
