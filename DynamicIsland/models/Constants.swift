@@ -407,6 +407,12 @@ enum MediaControllerType: String, CaseIterable, Identifiable, Defaults.Serializa
     case youtubeMusic = "Youtube Music"
     case amazonMusic = "Amazon Music"
     case cider = "Cider"
+
+    static let allCases: [MediaControllerType] = [
+        .appleMusic,
+        .spotify,
+        .youtubeMusic
+    ]
     
     var id: String { self.rawValue }
     
@@ -1183,7 +1189,6 @@ extension Defaults.Keys {
     static let extensionLockScreenWidgetCapacity = Key<Int>("extensionLockScreenWidgetCapacity", default: 4)
     static let extensionNotchExperienceCapacity = Key<Int>("extensionNotchExperienceCapacity", default: 2)
     static let enableExtensionFileSharing = Key<Bool>("enableExtensionFileSharing", default: true)
-    
     // MARK: Keyboard Shortcuts
     static let enableShortcuts = Key<Bool>("enableShortcuts", default: true)
     
@@ -1304,13 +1309,8 @@ extension Defaults.Keys {
     static let enableAppleNotesSync = Key<Bool>("enableAppleNotesSync", default: false)
     static let appleNotesLastSyncDate = Key<Date?>("appleNotesLastSyncDate", default: nil)
     
-    // Helper to determine the default media controller based on macOS version
     static var defaultMediaController: MediaControllerType {
-        if #available(macOS 15.4, *) {
-            return .appleMusic
-        } else {
-            return .nowPlaying
-        }
+        .appleMusic
     }
     
     // Migration helper to convert from legacy enableGradient Boolean to new ProgressBarStyle enum
