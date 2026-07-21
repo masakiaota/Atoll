@@ -1071,7 +1071,7 @@ extension Defaults.Keys {
         // MARK: Fullscreen Media Detection
     static let alwaysHideInFullscreen = Key<Bool>("alwaysHideInFullscreen", default: false)
     
-    static let hideNotchOption = Key<HideNotchOption>("hideNotchOption", default: .nowPlayingOnly)
+    static let hideNotchOption = Key<HideNotchOption>("hideNotchOption", default: .always)
     
     // MARK: Wobble Animation
     static let enableWobbleAnimation = Key<Bool>("enableWobbleAnimation", default: false)
