@@ -2776,15 +2776,15 @@ struct Media: View {
             } header: {
                 Text("Media Source")
             } footer: {
-                HStack {
-                    Text("YouTube Music requires this third-party app to be installed: ")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                    Link("https://github.com/th-ch/youtube-music", destination: URL(string: "https://github.com/th-ch/youtube-music")!)
-                        .font(.caption)
-                        .foregroundColor(.blue)
+                if mediaController == .youtubeMusic {
+                    HStack {
+                        Text("YouTube Music requires this third-party app to be installed: ")
+                            .foregroundStyle(.secondary)
+                        Link("https://github.com/th-ch/youtube-music", destination: URL(string: "https://github.com/th-ch/youtube-music")!)
+                            .foregroundColor(.blue)
+                    }
+                    .font(.caption)
                 }
-                .font(.caption)
             }
 
             if mediaController == .spotify {
@@ -3043,6 +3043,11 @@ struct Media: View {
             }
         }
         .navigationTitle("Media")
+        .onAppear {
+            if !availableMediaControllers.contains(mediaController) {
+                mediaController = .appleMusic
+            }
+        }
     }
 
     private var availableMediaControllers: [MediaControllerType] {

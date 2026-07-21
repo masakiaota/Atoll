@@ -33,7 +33,10 @@ struct MusicControllerSelectionView: View {
         MediaControllerType.allCases
     }
     
-    @State private var selectedMediaController: MediaControllerType = Defaults[.mediaController]
+    @State private var selectedMediaController: MediaControllerType = {
+        let storedController = Defaults[.mediaController]
+        return MediaControllerType.allCases.contains(storedController) ? storedController : .appleMusic
+    }()
     
     var body: some View {
         VStack(spacing: 20) {
