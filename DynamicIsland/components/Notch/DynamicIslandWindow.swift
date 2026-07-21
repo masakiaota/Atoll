@@ -48,7 +48,7 @@ class DynamicIslandWindow: NSPanel {
             .fullScreenAuxiliary,
             .canJoinAllSpaces,
             .ignoresCycle,
-            .stationary,
+            .transient,
         ]
         
         isReleasedWhenClosed = false
