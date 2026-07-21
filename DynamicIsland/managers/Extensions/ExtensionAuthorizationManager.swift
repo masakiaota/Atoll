@@ -37,7 +37,9 @@ final class ExtensionAuthorizationManager: ObservableObject {
 
     // MARK: - Public API
 
-    var isExtensionsFeatureEnabled: Bool { Defaults[.enableThirdPartyExtensions] }
+    var isExtensionsFeatureEnabled: Bool {
+        AppRuntimeEnvironment.thirdPartyExtensionsEnabled && Defaults[.enableThirdPartyExtensions]
+    }
     var areLiveActivitiesEnabled: Bool { Defaults[.enableExtensionLiveActivities] }
     var areLockScreenWidgetsEnabled: Bool { Defaults[.enableExtensionLockScreenWidgets] }
     var areNotchExperiencesEnabled: Bool { Defaults[.enableExtensionNotchExperiences] }

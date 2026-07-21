@@ -20,6 +20,14 @@ import Foundation
 
 /// Runtime context flags used to keep the app's launch deterministic on CI.
 enum AppRuntimeEnvironment {
+    /// This fork is used from local builds and does not publish a signed update feed.
+    /// Keep Sparkle dormant until a fork-owned feed and signing key are configured.
+    static let softwareUpdatesEnabled = false
+
+    /// Third-party extension integrations are intentionally dormant in this fork.
+    /// Keep their implementation available for a later, deliberate opt-in.
+    static let thirdPartyExtensionsEnabled = false
+
     /// `true` only in DEBUG builds launched by XCUITest (`--uitesting`); always false in Release.
     static let isUITesting: Bool = {
         #if DEBUG

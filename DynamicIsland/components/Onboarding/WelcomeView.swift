@@ -74,18 +74,6 @@ struct WelcomeView: View {
                     }
                     .buttonStyle(BorderedProminentButtonStyle())
                     
-                    // Privacy Policy Link
-                    Button(action: {
-                        if let url = URL(string: "https://ebullioscopic.github.io/DynamicIsland/privacy-policy") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }) {
-                        Text("Privacy Policy")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 8)
                 }
                 .padding(.top)
             }
