@@ -43,6 +43,7 @@ struct ContentView: View {
     @ObservedObject var musicManager = MusicManager.shared
     @ObservedObject var timerManager = TimerManager.shared
     @ObservedObject var reminderManager = ReminderLiveActivityManager.shared
+    @ObservedObject var focusTaskManager = FocusTaskManager.shared
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var statsManager = StatsManager.shared
     @ObservedObject var recordingManager = ScreenRecordingManager.shared
@@ -96,7 +97,10 @@ struct ContentView: View {
     
     // Dynamic sizing based on view type and graph count with smooth transitions
     var dynamicNotchSize: CGSize {
-        let baseSize = Defaults[.enableMinimalisticUI] ? minimalisticOpenNotchSize(isDynamicIslandMode: isDynamicIslandMode) : openNotchSize
+        let baseSize = resolvedOpenNotchSize(
+            for: coordinator.currentView,
+            isDynamicIslandMode: isDynamicIslandMode
+        )
         
         // When inline sneak peek is active in closed notch, use the wider inline width
         // so the outer maxWidth frame doesn't clip the expanded content
@@ -938,6 +942,22 @@ struct ContentView: View {
                       } else if vm.notchState == .closed && capsLockManager.isCapsLockActive && Defaults[.enableCapsLockIndicator] && !vm.hideOnClosed && !lockScreenManager.isLocked {
                           InlineHUD(type: .constant(.capsLock), value: .constant(1.0), icon: .constant(""), hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(AnyTransition.move(edge: .trailing).combined(with: .opacity))
+                      } else if isCurrentScreenExpansionVisible
+                            && currentScreenExpansionType == .music
+                            && canShowMusicDuringExpansion
+                            && musicPairingEligible {
+                          MusicLiveActivity(secondary: musicSecondary)
+                              .id("closed-music-live-activity")
+                              .transition(closedLiveActivitySwapTransition)
+                      } else if !isCurrentScreenExpansionVisible
+                            && !isSneakPeekVisibleOnCurrentScreen
+                            && vm.notchState == .closed
+                            && focusTaskManager.hasActiveTask
+                            && !vm.hideOnClosed
+                            && !lockScreenManager.isLocked {
+                          FocusTaskLiveActivity(isNonNotchScreen: isNonNotchScreen)
+                              .id("closed-focus-task-live-activity")
+                              .transition(closedLiveActivitySwapTransition)
                       } else if canShowMusicDuringExpansion && musicPairingEligible {
                           MusicLiveActivity(secondary: musicSecondary)
                               .id("closed-music-live-activity")

@@ -28,7 +28,25 @@ protocol CalendarServiceProviding {
     func requestAccess(to type: EKEntityType) async -> Bool
     func calendars() async -> [CalendarModel]
     func events(from start: Date, to end: Date, calendars: [String]) async -> [EventModel]
-    func setReminderCompleted(reminderID: String, completed: Bool) async
+    @MainActor func incompleteReminders(calendars: [String]) async throws -> [ReminderItem]
+    @MainActor func setReminderCompleted(reminderID: String, completed: Bool) async throws
+}
+
+enum CalendarServiceError: LocalizedError {
+    case reminderAccessDenied
+    case reminderFetchFailed
+    case reminderNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .reminderAccessDenied:
+            return String(localized: "Reminder access is not available.")
+        case .reminderFetchFailed:
+            return String(localized: "Reminders could not be loaded.")
+        case .reminderNotFound:
+            return String(localized: "The reminder no longer exists.")
+        }
+    }
 }
 
 class CalendarService: CalendarServiceProviding {
@@ -130,13 +148,59 @@ class CalendarService: CalendarServiceProviding {
     }
 
     @MainActor
-    func setReminderCompleted(reminderID: String, completed: Bool) async {
-        guard let reminder = store.calendarItem(withIdentifier: reminderID) as? EKReminder else { return }
+    func incompleteReminders(calendars ids: [String]) async throws -> [ReminderItem] {
+        guard hasAccess(to: .reminder) else {
+            throw CalendarServiceError.reminderAccessDenied
+        }
+
+        let calendars = store.calendars(for: .reminder).filter { calendar in
+            ids.isEmpty || ids.contains(calendar.calendarIdentifier)
+        }
+        guard !calendars.isEmpty else { return [] }
+
+        let reminders: [EKReminder] = try await withCheckedThrowingContinuation { continuation in
+            let predicate = store.predicateForReminders(in: calendars)
+            store.fetchReminders(matching: predicate) { reminders in
+                guard let reminders else {
+                    continuation.resume(throwing: CalendarServiceError.reminderFetchFailed)
+                    return
+                }
+                continuation.resume(returning: reminders)
+            }
+        }
+
+        return reminders
+            .filter { !$0.isCompleted }
+            .compactMap(ReminderItem.init)
+            .sorted(by: Self.reminderSort)
+    }
+
+    @MainActor
+    func setReminderCompleted(reminderID: String, completed: Bool) async throws {
+        guard hasAccess(to: .reminder) else {
+            throw CalendarServiceError.reminderAccessDenied
+        }
+        guard let reminder = store.calendarItem(withIdentifier: reminderID) as? EKReminder else {
+            throw CalendarServiceError.reminderNotFound
+        }
         reminder.isCompleted = completed
-        do {
-            try store.save(reminder, commit: true)
-        } catch {
-            print("Failed to update reminder completion: \(error)")
+        try store.save(reminder, commit: true)
+    }
+
+    private static func reminderSort(_ lhs: ReminderItem, _ rhs: ReminderItem) -> Bool {
+        switch (lhs.dueDate, rhs.dueDate) {
+        case let (left?, right?) where left != right:
+            return left < right
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            let titleOrder = lhs.title.localizedCaseInsensitiveCompare(rhs.title)
+            if titleOrder != .orderedSame {
+                return titleOrder == .orderedAscending
+            }
+            return lhs.id < rhs.id
         }
     }
 }
@@ -201,6 +265,19 @@ extension EventModel {
             hasRecurrenceRules: reminder.hasRecurrenceRules,
             priority: .init(from: reminder.priority),
             conferenceURL: nil
+        )
+    }
+}
+
+extension ReminderItem {
+    init?(from reminder: EKReminder) {
+        guard let calendar = reminder.calendar else { return nil }
+
+        self.init(
+            id: reminder.calendarItemIdentifier,
+            title: reminder.title ?? "",
+            calendar: .init(from: calendar),
+            dueDate: reminder.dueDateComponents.flatMap { Calendar.current.date(from: $0) }
         )
     }
 }

@@ -684,19 +684,9 @@ struct MusicControlsView: View {
 
 struct NotchHomeView: View {
     @EnvironmentObject var vm: DynamicIslandViewModel
-    @ObservedObject var webcamManager = WebcamManager.shared
-    @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var coordinator = DynamicIslandViewCoordinator.shared
     @ObservedObject private var extensionNotchExperienceManager = ExtensionNotchExperienceManager.shared
-    @ObservedObject private var musicManager = MusicManager.shared
-    @Default(.showStandardMediaControls) private var showStandardMediaControls
-    @Default(.autoHideInactiveNotchMediaPlayer) private var autoHideInactiveNotchMediaPlayer
     let albumArtNamespace: Namespace.ID
-
-    /// Whether the music player should actively display (enabled AND has real content).
-    private var shouldShowMusicPlayer: Bool {
-        showStandardMediaControls && (!autoHideInactiveNotchMediaPlayer || musicManager.hasActiveSession)
-    }
     
     var body: some View {
         Group {
@@ -719,42 +709,15 @@ struct NotchHomeView: View {
                     MinimalisticMusicPlayerView(albumArtNamespace: albumArtNamespace)
                 }
             } else {
-                // Normal mode: Show full music player with optional calendar and webcam
-                if shouldShowMusicPlayer {
-                    MusicPlayerView(albumArtNamespace: albumArtNamespace)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                
-                if Defaults[.showCalendar] {
-                    Group {
-                        if shouldShowMusicPlayer {
-                            CalendarView()
-                        } else {
-                            StandaloneCalendarView()
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onHover { isHovering in
-                        vm.isHoveringCalendar = isHovering
-                    }
+                FocusHomeView(albumArtNamespace: albumArtNamespace)
                     .environmentObject(vm)
-                }
-                
-                if Defaults[.showMirror],
-                   webcamManager.cameraAvailable,
-                   vm.notchState == .open {
-                    CameraPreviewView(webcamManager: webcamManager)
-                        .scaledToFit()
-                        .opacity(vm.notchState == .closed ? 0 : 1)
-                        .blur(radius: vm.notchState == .closed ? 20 : 0)
-                }
             }
         }
         .transition(.opacity.animation(.smooth.speed(0.9))
             .combined(with: .blurReplace.animation(.smooth.speed(0.9)))
             .combined(with: .move(edge: .top)))
         .blur(radius: vm.notchState == .closed ? 30 : 0)
-        .padding(Defaults[.enableMinimalisticUI] ? 0 : 8) //Putting the main padding for home view here for consistency
+        .padding(Defaults[.enableMinimalisticUI] ? 0 : 8)
     }
 
     private var minimalisticOverridePayload: ExtensionNotchExperiencePayload? {

@@ -35,6 +35,21 @@ var openNotchSize: CGSize {
     return .init(width: width, height: 200)
 }
 
+/// The dashboard needs enough vertical space to show both a schedule and a
+/// reminder list. Other tabs retain their existing dimensions.
+@MainActor
+func resolvedOpenNotchSize(for view: NotchViews, isDynamicIslandMode: Bool) -> CGSize {
+    let minimalistic = Defaults[.enableMinimalisticUI]
+    var size = minimalistic
+        ? minimalisticOpenNotchSize(isDynamicIslandMode: isDynamicIslandMode)
+        : openNotchSize
+
+    if !minimalistic && view == .home {
+        size.height = 360
+    }
+    return size
+}
+
 /// Maximum notch width based on the current screen's point width.
 /// Prevents the notch from extending beyond the screen on scaled displays.
 func maxAllowedNotchWidth(for screenName: String? = nil) -> CGFloat {
@@ -60,12 +75,8 @@ func maxAllowedNotchWidth() -> CGFloat {
 /// Counts the number of currently enabled standard notch tabs.
 /// Mirrors the tab-building logic in ``TabSelectionView``.
 func enabledStandardTabCount() -> Int {
-    var count = 0
-
-    // Home tab
-    if Defaults[.showStandardMediaControls] || Defaults[.showCalendar] || Defaults[.showMirror] {
-        count += 1
-    }
+    // Home is the task dashboard and is always available.
+    var count = 1
 
     // Shelf tab
     if Defaults[.dynamicShelf] {

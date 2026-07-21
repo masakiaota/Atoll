@@ -26,6 +26,13 @@ import SwiftUI
 
 // MARK: - CalendarManager
 
+enum ReminderLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 @MainActor
 class CalendarManager: ObservableObject {
     static let shared = CalendarManager()
@@ -39,6 +46,9 @@ class CalendarManager: ObservableObject {
     @Published var calendarAuthorizationStatus: EKAuthorizationStatus = .notDetermined
     @Published var reminderAuthorizationStatus: EKAuthorizationStatus = .notDetermined
     @Published var lockScreenEvents: [EventModel] = []
+    @Published private(set) var incompleteReminders: [ReminderItem] = []
+    @Published private(set) var reminderLoadState: ReminderLoadState = .idle
+    @Published private(set) var reminderMutationError: String?
 
     private var lockScreenPreviewEvents: [EventModel]?
 
@@ -62,10 +72,13 @@ class CalendarManager: ObservableObject {
 
     private init() {
         currentWeekStartDate = CalendarManager.startOfDay(Date())
+        calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
+        reminderAuthorizationStatus = EKEventStore.authorizationStatus(for: .reminder)
         setupEventStoreChangedObserver()
         startLockScreenRefreshLoop()
         Task {
             await reloadCalendarAndReminderLists()
+            await refreshIncompleteReminders()
         }
     }
 
@@ -83,7 +96,9 @@ class CalendarManager: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleEventStoreChanged()
+            Task { @MainActor in
+                self?.handleEventStoreChanged()
+            }
         }
     }
 
@@ -119,6 +134,7 @@ class CalendarManager: ObservableObject {
         pendingEventStoreRefreshTask = nil
         await reloadCalendarAndReminderLists()
         await maybeRefreshEventsAfterReload()
+        await refreshIncompleteReminders()
         await updateLockScreenEvents(force: true)
         nextAllowedEventStoreRefresh = Date().addingTimeInterval(eventStoreChangeThrottle)
         ignoreEventStoreChangesUntil = Date().addingTimeInterval(selfInducedChangeSuppression)
@@ -135,7 +151,7 @@ class CalendarManager: ObservableObject {
 
     @MainActor
     private func maybeRefreshEventsAfterReload() async {
-        guard hasCalendarAccess else { return }
+        guard hasCalendarAccess || hasReminderAccess else { return }
         let now = Date()
         if let lastFetch = lastEventsFetchDate, now.timeIntervalSince(lastFetch) < reloadRefreshInterval {
             return
@@ -188,11 +204,13 @@ class CalendarManager: ObservableObject {
             reminderAuthorizationStatus = granted ? .fullAccess : .denied
             if granted {
                 await reloadCalendarAndReminderLists()
+                await refreshIncompleteReminders()
             }
         case .restricted, .denied:
             NSLog("Reminder access denied or restricted")
         case .authorized, .fullAccess:
             await reloadCalendarAndReminderLists()
+            await refreshIncompleteReminders()
         case .writeOnly:
             NSLog("Reminder write only")
         @unknown default:
@@ -241,6 +259,7 @@ class CalendarManager: ObservableObject {
         Defaults[.calendarSelectionState] = selectionState
         updateSelectedCalendars()
         await updateEvents(force: true)
+        await refreshIncompleteReminders()
         await updateLockScreenEvents(force: true)
     }
 
@@ -351,7 +370,7 @@ class CalendarManager: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
                 if Task.isCancelled { break }
-                guard self.hasCalendarAccess else { continue }
+                guard self.hasCalendarAccess || self.hasReminderAccess else { continue }
                 await self.updateLockScreenEvents(force: false)
             }
         }
@@ -382,6 +401,41 @@ class CalendarManager: ObservableObject {
         lastEventsFetchDate = Date()
     }
 
+    func refreshIncompleteReminders() async {
+        guard hasReminderAccess else {
+            if reminderAuthorizationStatus == .denied || reminderAuthorizationStatus == .restricted {
+                reminderLoadState = .failed(String(localized: "Reminder access is not available."))
+            }
+            return
+        }
+
+        let selectedReminderCalendars = selectedCalendars.filter(\.isReminder)
+        if !reminderLists.isEmpty && selectedReminderCalendars.isEmpty {
+            incompleteReminders = []
+            reminderLoadState = .loaded
+            return
+        }
+
+        reminderLoadState = .loading
+        let calendarIDs = selectedReminderCalendars.map(\.id)
+        let service = calendarService
+        let result: Result<[ReminderItem], Error> = await eventFetchLimiter.run {
+            do {
+                return .success(try await service.incompleteReminders(calendars: calendarIDs))
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        switch result {
+        case .success(let reminders):
+            incompleteReminders = reminders
+            reminderLoadState = .loaded
+        case .failure(let error):
+            reminderLoadState = .failed(error.localizedDescription)
+        }
+    }
+
     func setCalendarsSelected(_ calendars: [CalendarModel], isSelected: Bool) async {
         var selectionState = Defaults[.calendarSelectionState]
         let ids = Set(calendars.map { $0.id })
@@ -409,12 +463,22 @@ class CalendarManager: ObservableObject {
         Defaults[.calendarSelectionState] = selectionState
         updateSelectedCalendars()
         await updateEvents(force: true)
+        await refreshIncompleteReminders()
         await updateLockScreenEvents(force: true)
     }
 
-    func setReminderCompleted(reminderID: String, completed: Bool) async {
-        await calendarService.setReminderCompleted(reminderID: reminderID, completed: completed)
-        await updateEvents(force: true)
+    @discardableResult
+    func setReminderCompleted(reminderID: String, completed: Bool) async -> Bool {
+        reminderMutationError = nil
+        do {
+            try await calendarService.setReminderCompleted(reminderID: reminderID, completed: completed)
+            await updateEvents(force: true)
+            await refreshIncompleteReminders()
+            return true
+        } catch {
+            reminderMutationError = error.localizedDescription
+            return false
+        }
     }
 }
 
