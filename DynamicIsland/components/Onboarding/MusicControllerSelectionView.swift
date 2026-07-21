@@ -30,14 +30,13 @@ struct MusicControllerSelectionView: View {
     @Default(.mediaController) var mediaController
     
     private var availableMediaControllers: [MediaControllerType] {
-        if MusicManager.shared.isNowPlayingDeprecated {
-            return MediaControllerType.allCases.filter { $0 != .nowPlaying }
-        } else {
-            return MediaControllerType.allCases
-        }
+        MediaControllerType.allCases
     }
     
-    @State private var selectedMediaController: MediaControllerType = Defaults[.mediaController]
+    @State private var selectedMediaController: MediaControllerType = {
+        let storedController = Defaults[.mediaController]
+        return MediaControllerType.allCases.contains(storedController) ? storedController : .appleMusic
+    }()
     
     var body: some View {
         VStack(spacing: 20) {

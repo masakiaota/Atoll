@@ -29,24 +29,7 @@ final class ExtensionNotchExperienceManager: ObservableObject {
 
     private let authorizationManager = ExtensionAuthorizationManager.shared
     private let maxCapacityKey = Defaults.Keys.extensionNotchExperienceCapacity
-    private let eventBridge = ExtensionEventBridge.shared
-    private var observerToken: NSObjectProtocol?
-    private var suppressBroadcast = false
-    private let currentProcessID = ProcessInfo.processInfo.processIdentifier
-
-    private init() {
-        activeExperiences = eventBridge.loadPersistedNotchExperiences()
-        sortExperiences()
-        observerToken = eventBridge.observeNotchExperienceSnapshots { [weak self] payloads, sourcePID in
-            self?.applySnapshot(payloads, sourcePID: sourcePID)
-        }
-    }
-
-    deinit {
-        if let observerToken {
-            eventBridge.removeObserver(observerToken)
-        }
-    }
+    private init() {}
 
     // MARK: - Presentation Lifecycle
 
@@ -61,8 +44,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         }
 
         try ExtensionDescriptorValidator.validate(descriptor)
-        try ensureWebContentSupport(for: descriptor)
-
         let isUpdate: Bool
         if let index = activeExperiences.firstIndex(where: { $0.descriptor.id == descriptor.id && $0.bundleIdentifier == bundleIdentifier }) {
             let payload = ExtensionNotchExperiencePayload(
@@ -92,8 +73,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         }
 
         authorizationManager.recordActivity(for: bundleIdentifier, scope: .notchExperiences)
-        broadcastSnapshot()
-
         if let tabConfig = descriptor.tab, Defaults[.enableExtensionNotchTabs] {
             Logger.log("Notch experience tab ready (title: \(tabConfig.title))", category: .extensions)
         }
@@ -116,7 +95,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         guard let index = activeExperiences.firstIndex(where: { $0.descriptor.id == descriptor.id && $0.bundleIdentifier == bundleIdentifier }) else {
             throw ExtensionValidationError.invalidDescriptor("Missing existing notch experience")
         }
-        try ensureWebContentSupport(for: descriptor)
         let payload = ExtensionNotchExperiencePayload(
             bundleIdentifier: bundleIdentifier,
             descriptor: descriptor,
@@ -126,7 +104,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         sortExperiences()
         authorizationManager.recordActivity(for: bundleIdentifier, scope: .notchExperiences)
         logDiagnostics("Updated notch experience \(descriptor.id) for \(bundleIdentifier)")
-        broadcastSnapshot()
     }
 
     func dismiss(experienceID: String, bundleIdentifier: String) {
@@ -136,10 +113,7 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         }
         guard previousCount != activeExperiences.count else { return }
         Logger.log("Dismissed notch experience \(experienceID) from \(bundleIdentifier)", category: .extensions)
-        ExtensionXPCServiceHost.shared.notifyNotchExperienceDismiss(bundleIdentifier: bundleIdentifier, experienceID: experienceID)
-        ExtensionRPCServer.shared.notifyNotchExperienceDismiss(bundleIdentifier: bundleIdentifier, experienceID: experienceID)
         logDiagnostics("Removed notch experience \(experienceID) for \(bundleIdentifier); remaining: \(activeExperiences.count)")
-        broadcastSnapshot()
     }
 
     func dismissAll(for bundleIdentifier: String) {
@@ -149,13 +123,8 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
             activeExperiences.removeAll { $0.bundleIdentifier == bundleIdentifier }
         }
-        ids.forEach {
-            ExtensionXPCServiceHost.shared.notifyNotchExperienceDismiss(bundleIdentifier: bundleIdentifier, experienceID: $0)
-            ExtensionRPCServer.shared.notifyNotchExperienceDismiss(bundleIdentifier: bundleIdentifier, experienceID: $0)
-        }
         if !ids.isEmpty {
             logDiagnostics("Removed all notch experiences for \(bundleIdentifier); ids: \(ids.joined(separator: ", "))")
-            broadcastSnapshot()
         }
     }
 
@@ -187,8 +156,6 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         activeExperiences.first { $0.descriptor.id == experienceID }
     }
 
-    // MARK: - Snapshot Sync
-
     private func sortExperiences() {
         activeExperiences.sort(by: descriptorComparator)
     }
@@ -200,38 +167,8 @@ final class ExtensionNotchExperienceManager: ObservableObject {
         return lhs.priority > rhs.priority
     }
 
-    private func broadcastSnapshot() {
-        guard !suppressBroadcast else { return }
-        eventBridge.broadcastNotchExperienceSnapshot(activeExperiences)
-        logDiagnostics("Broadcasted notch experience snapshot (count: \(activeExperiences.count))")
-    }
-
-    private func applySnapshot(_ payloads: [ExtensionNotchExperiencePayload], sourcePID: Int32) {
-        guard sourcePID != currentProcessID else { return }
-        suppressBroadcast = true
-        activeExperiences = payloads.sorted(by: descriptorComparator)
-        suppressBroadcast = false
-        logDiagnostics("Applied external notch experience snapshot from PID \(sourcePID) (count: \(payloads.count))")
-    }
-
-    private func ensureWebContentSupport(for descriptor: AtollNotchExperienceDescriptor) throws {
-        guard descriptor.hasWebContent else { return }
-        guard Defaults[.enableExtensionNotchInteractiveWebViews] else {
-            logDiagnostics("Rejected notch experience \(descriptor.id) due to web content while interactive web views are disabled")
-            throw ExtensionValidationError.unsupportedContent
-        }
-    }
-
     private func logDiagnostics(_ message: String) {
         guard Defaults[.extensionDiagnosticsLoggingEnabled] else { return }
         Logger.log(message, category: .extensions)
-    }
-}
-
-private extension AtollNotchExperienceDescriptor {
-    var hasWebContent: Bool {
-        if tab?.webContent != nil { return true }
-        if minimalistic?.webContent != nil { return true }
-        return false
     }
 }
