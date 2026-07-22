@@ -53,6 +53,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     @Published var isTimerPopoverActive: Bool = false
     @Published var shouldRecheckHover: Bool = false
     @Published var isScrollGestureActive: Bool = false
+    @Published var isHoveringMediaPlayer: Bool = false
     private var scrollGestureSuppressionTokens: Set<UUID> = []
     @Published private(set) var isAutoCloseSuppressed: Bool = false
     private var autoCloseSuppressionTokens: Set<UUID> = []
@@ -358,7 +359,10 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     }
     
     private func calculateDynamicNotchSize() -> CGSize {
-        let baseSize = Defaults[.enableMinimalisticUI] ? minimalisticOpenNotchSize(isDynamicIslandMode: shouldUseDynamicIslandMode(for: screen)) : openNotchSize
+        let baseSize = resolvedOpenNotchSize(
+            for: coordinator.currentView,
+            isDynamicIslandMode: shouldUseDynamicIslandMode(for: screen)
+        )
         var adjustedSize = baseSize
 
         if coordinator.currentView == .notes || coordinator.currentView == .clipboard {
@@ -380,6 +384,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         closedNotchSize = targetSize
         notchState = .closed
         resetScrollGestureSuppression()
+        isHoveringMediaPlayer = false
         resetAutoCloseSuppression()
 
         // Set the current view to shelf if it contains files and the user enables openShelfByDefault
@@ -398,24 +403,11 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             closedNotchSize = targetSize
             notchState = .closed
             resetScrollGestureSuppression()
+            isHoveringMediaPlayer = false
             resetAutoCloseSuppression()
         }
     }
 
-    private var helloCloseScheduled = false
-
-    func closeHello() {
-        guard !helloCloseScheduled else { return }
-        helloCloseScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
-            guard let self else { return }
-            self.coordinator.firstLaunch = false
-            withAnimation(self.animationLibrary.animation) {
-                self.close()
-            }
-        }
-    }
-    
     func toggleCameraPreview() {
         if isRequestingAuthorization {
             return

@@ -29,7 +29,6 @@ enum OnboardingStep {
     case cameraPermission
     case calendarPermission
     case musicPermission
-    case profileSelection
     case finished
 }
 
@@ -101,17 +100,6 @@ struct OnboardingView: View {
                 MusicControllerSelectionView(
                     onContinue: {
                         withAnimation(.easeInOut(duration: 0.6)) {
-                            step = .profileSelection
-                        }
-                    }
-                )
-                .transition(.opacity)
-                
-            case .profileSelection:
-                ProfileSelectionView(
-                    onContinue: { profiles in
-                        applyProfileSettings(profiles)
-                        withAnimation(.easeInOut(duration: 0.6)) {
                             step = .finished
                         }
                     }
@@ -157,4 +145,3 @@ struct OnboardingView: View {
         await calendarService.requestAccess()
     }
 }
-

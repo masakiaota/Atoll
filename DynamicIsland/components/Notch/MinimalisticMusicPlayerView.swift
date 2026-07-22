@@ -791,6 +791,7 @@ private struct MinimalisticReminderDetailsView: View {
                 playbackRate: musicManager.playbackRate,
                 isPlaying: musicManager.isPlaying,
                 isLiveStream: musicManager.isLiveStream,
+                trackSignature: musicManager.trackSignature,
                 onValueChange: { newValue in
                     musicManager.seek(to: newValue)
                 },

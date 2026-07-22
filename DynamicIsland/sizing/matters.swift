@@ -35,6 +35,21 @@ var openNotchSize: CGSize {
     return .init(width: width, height: 200)
 }
 
+/// The dashboard needs enough vertical space to show both a schedule and a
+/// reminder list. Other tabs retain their existing dimensions.
+@MainActor
+func resolvedOpenNotchSize(for view: NotchViews, isDynamicIslandMode: Bool) -> CGSize {
+    let minimalistic = Defaults[.enableMinimalisticUI]
+    var size = minimalistic
+        ? minimalisticOpenNotchSize(isDynamicIslandMode: isDynamicIslandMode)
+        : openNotchSize
+
+    if !minimalistic && view == .home {
+        size.height = 480
+    }
+    return size
+}
+
 /// Maximum notch width based on the current screen's point width.
 /// Prevents the notch from extending beyond the screen on scaled displays.
 func maxAllowedNotchWidth(for screenName: String? = nil) -> CGFloat {
@@ -60,12 +75,8 @@ func maxAllowedNotchWidth() -> CGFloat {
 /// Counts the number of currently enabled standard notch tabs.
 /// Mirrors the tab-building logic in ``TabSelectionView``.
 func enabledStandardTabCount() -> Int {
-    var count = 0
-
-    // Home tab
-    if Defaults[.showStandardMediaControls] || Defaults[.showCalendar] || Defaults[.showMirror] {
-        count += 1
-    }
+    // Home is the task dashboard and is always available.
+    var count = 1
 
     // Shelf tab
     if Defaults[.dynamicShelf] {
@@ -305,6 +316,19 @@ func getScreenFrame(_ screen: String? = nil) -> CGRect? {
     }
     
     return nil
+}
+
+/// Width used by the closed focus-task surface on a display without a
+/// physical notch. It grows to 2.5 times the configured closed width, but the
+/// visible surface never exceeds one quarter of that display.
+func focusTaskClosedWidth(screen screenName: String?, baseWidth: CGFloat) -> CGFloat {
+    let screen = screenName.flatMap { name in
+        NSScreen.screens.first { $0.localizedName == name }
+    } ?? NSScreen.main
+
+    guard let screen, screen.safeAreaInsets.top <= 0 else { return baseWidth }
+    let maximumWidth = max(1, screen.frame.width / 4)
+    return min(baseWidth * 2.5, maximumWidth)
 }
 
 func getClosedNotchSize(screen: String? = nil) -> CGSize {

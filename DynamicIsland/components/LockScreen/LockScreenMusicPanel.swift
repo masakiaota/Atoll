@@ -553,6 +553,7 @@ struct LockScreenMusicPanel: View {
                 playbackRate: musicManager.playbackRate,
                 isPlaying: musicManager.isPlaying,
                 isLiveStream: musicManager.isLiveStream,
+                trackSignature: musicManager.trackSignature,
                 onValueChange: { newValue in
                     registerInteraction()
                     musicManager.seek(to: newValue)

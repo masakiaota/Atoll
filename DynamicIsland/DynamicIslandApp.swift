@@ -489,7 +489,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         // Use minimalistic or normal size based on settings
-        var baseSize = Defaults[.enableMinimalisticUI] ? minimalisticOpenNotchSize(isDynamicIslandMode: shouldUseDynamicIslandMode(for: vm.screen)) : openNotchSize
+        var baseSize = resolvedOpenNotchSize(
+            for: coordinator.currentView,
+            isDynamicIslandMode: shouldUseDynamicIslandMode(for: vm.screen)
+        )
         
         // Use a consistent height for different view types
         if coordinator.currentView == .timer {
@@ -1456,12 +1459,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.titleVisibility = .hidden
             window.contentView = NSHostingView(rootView: OnboardingView(
                 onFinish: {
+                    self.coordinator.firstLaunch = false
                     window.orderOut(nil)
                     NSApp.setActivationPolicy(.accessory)
                     window.close()
                     NSApp.deactivate()
                 },
                 onOpenSettings: {
+                    self.coordinator.firstLaunch = false
                     window.close()
                     SettingsWindowController.shared.showWindow()
                 }

@@ -43,6 +43,7 @@ struct ContentView: View {
     @ObservedObject var musicManager = MusicManager.shared
     @ObservedObject var timerManager = TimerManager.shared
     @ObservedObject var reminderManager = ReminderLiveActivityManager.shared
+    @ObservedObject var focusTaskManager = FocusTaskManager.shared
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var statsManager = StatsManager.shared
     @ObservedObject var recordingManager = ScreenRecordingManager.shared
@@ -96,7 +97,10 @@ struct ContentView: View {
     
     // Dynamic sizing based on view type and graph count with smooth transitions
     var dynamicNotchSize: CGSize {
-        let baseSize = Defaults[.enableMinimalisticUI] ? minimalisticOpenNotchSize(isDynamicIslandMode: isDynamicIslandMode) : openNotchSize
+        let baseSize = resolvedOpenNotchSize(
+            for: coordinator.currentView,
+            isDynamicIslandMode: isDynamicIslandMode
+        )
         
         // When inline sneak peek is active in closed notch, use the wider inline width
         // so the outer maxWidth frame doesn't clip the expanded content
@@ -391,6 +395,21 @@ struct ContentView: View {
         return screen.safeAreaInsets.top <= 0
     }
 
+    private var canShowFocusLiveActivity: Bool {
+        vm.notchState == .closed
+            && focusTaskManager.hasActiveTask
+            && !vm.hideOnClosed
+            && !lockScreenManager.isLocked
+            && !isCurrentScreenExpansionVisible
+            && !isSneakPeekVisibleOnCurrentScreen
+    }
+
+    private var showsPhysicalFocusLiveActivity: Bool {
+        !isNonNotchScreen
+            && canShowFocusLiveActivity
+            && !(capsLockManager.isCapsLockActive && enableCapsLockIndicator)
+    }
+
     /// Whether the global sneak peek is visible on this specific screen.
     private var isSneakPeekVisibleOnCurrentScreen: Bool {
         guard coordinator.sneakPeek.show else { return false }
@@ -526,7 +545,7 @@ struct ContentView: View {
             .frame(alignment: .top)
             .padding(.horizontal, notchHorizontalPadding)
             .padding([.horizontal, .bottom], vm.notchState == .open ? 12 : 0)
-            .background(.black)
+            .background(showsPhysicalFocusLiveActivity ? Color.clear : Color.black)
             .clipShape(resolvedClipShape)
             .compositingGroup()
             .shadow(
@@ -606,16 +625,6 @@ struct ContentView: View {
                 ? -(vm.closedNotchSize.height + pillTopOffset + currentShadowPadding + 10)
                 : 0
             )
-            .onAppear(perform: {
-                if coordinator.firstLaunch {
-                    // Single open during first launch; closeHello() handles the timed close.
-                    runAfter(1) {
-                        withAnimation(vm.animation) {
-                            openNotch()
-                        }
-                    }
-                }
-            })
             .onChange(of: vm.notchState) { _, newState in
                 // Update smart monitoring based on notch state
                 if enableStatsFeature {
@@ -867,15 +876,7 @@ struct ContentView: View {
       func NotchLayout() -> some View {
           VStack(alignment: .leading) {
               VStack(alignment: .leading) {
-                  if coordinator.firstLaunch {
-                      Spacer()
-                      HelloAnimation().frame(width: 200, height: 80).onAppear(perform: {
-                          vm.closeHello()
-                      })
-                      .padding(.top, 40)
-                      Spacer()
-                  } else {
-                        let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
+                      let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
                             || !musicManager.artistName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
                       let hasActiveMusicSnapshot: Bool = {
                           if musicManager.isPlaying { return true }
@@ -938,6 +939,10 @@ struct ContentView: View {
                       } else if vm.notchState == .closed && capsLockManager.isCapsLockActive && Defaults[.enableCapsLockIndicator] && !vm.hideOnClosed && !lockScreenManager.isLocked {
                           InlineHUD(type: .constant(.capsLock), value: .constant(1.0), icon: .constant(""), hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(AnyTransition.move(edge: .trailing).combined(with: .opacity))
+                      } else if canShowFocusLiveActivity {
+                          FocusTaskLiveActivity(isNonNotchScreen: isNonNotchScreen)
+                              .id("closed-focus-task-live-activity")
+                              .transition(closedLiveActivitySwapTransition)
                       } else if canShowMusicDuringExpansion && musicPairingEligible {
                           MusicLiveActivity(secondary: musicSecondary)
                               .id("closed-music-live-activity")
@@ -1070,7 +1075,6 @@ struct ContentView: View {
                               }
                           }
                       }
-                  }
               }
               .conditionalModifier(shouldFixSizeForSneakPeek()) { view in
                   view
@@ -1899,7 +1903,6 @@ struct ContentView: View {
             && !isMusicHUDDeferredAfterUnlock
             && !isCurrentScreenExpansionVisible
             && (!musicManager.isPlayerIdle || musicManager.bundleIdentifier != nil)
-            && !coordinator.firstLaunch
     }
 
     private func handleClosedMusicWaveformTapIfNeeded() -> Bool {
@@ -2159,7 +2162,7 @@ struct ContentView: View {
     }
 
     private func shouldPreventAutoClose() -> Bool {
-        coordinator.firstLaunch || hasAnyActivePopovers() || vm.isAutoCloseSuppressed || SharingStateManager.shared.preventNotchClose || (Defaults[.terminalStickyMode] && coordinator.currentView == .terminal)
+        hasAnyActivePopovers() || vm.isAutoCloseSuppressed || SharingStateManager.shared.preventNotchClose || (Defaults[.terminalStickyMode] && coordinator.currentView == .terminal)
     }
     
     // Helper to prevent rapid haptic feedback
@@ -2355,7 +2358,9 @@ struct ContentView: View {
     }
 
     private func canPerformSkipGesture() -> Bool {
-        let canSkipInOpenHome = vm.notchState == .open && coordinator.currentView == .home
+        let canSkipInOpenHome = vm.notchState == .open
+            && coordinator.currentView == .home
+            && (Defaults[.enableMinimalisticUI] || vm.isHoveringMediaPlayer)
         let canSkipInClosedMusic = !Defaults[.openNotchOnHover] && isClosedMusicGestureContext
 
         return enableHorizontalMusicGestures

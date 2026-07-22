@@ -56,18 +56,12 @@ struct TabSelectionView: View {
     @Default(.enableThirdPartyExtensions) private var enableThirdPartyExtensions
     @Default(.enableExtensionNotchExperiences) private var enableExtensionNotchExperiences
     @Default(.enableExtensionNotchTabs) private var enableExtensionNotchTabs
-    @Default(.showCalendar) private var showCalendar
-    @Default(.showMirror) private var showMirror
-    @Default(.showStandardMediaControls) private var showStandardMediaControls
-    @Default(.enableMinimalisticUI) private var enableMinimalisticUI
     @Namespace var animation
     
     private var tabs: [TabModel] {
         var tabsArray: [TabModel] = []
 
-        if homeTabVisible {
-            tabsArray.append(TabModel(label: "Home", icon: "house.fill", view: .home))
-        }
+        tabsArray.append(TabModel(label: "Home", icon: "house.fill", view: .home))
 
         if Defaults[.dynamicShelf] {
             tabsArray.append(TabModel(label: "Shelf", icon: "tray.fill", view: .shelf))
@@ -157,13 +151,6 @@ struct TabSelectionView: View {
 
     private var extensionTabPayloads: [ExtensionNotchExperiencePayload] {
         extensionNotchExperienceManager.activeExperiences.filter { $0.descriptor.tab != nil }
-    }
-
-    private var homeTabVisible: Bool {
-        if enableMinimalisticUI {
-            return true
-        }
-        return showStandardMediaControls || showCalendar || showMirror
     }
 
     private func isSelected(_ tab: TabModel) -> Bool {
