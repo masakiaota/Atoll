@@ -501,7 +501,8 @@ class MusicManager: ObservableObject {
     @Published private(set) var skipGesturePulse: SkipGesturePulse?
 
     var trackSignature: String {
-        [bundleIdentifier ?? "", songTitle, artistName, album, String(songDuration)]
+        let durationKey = songDuration.isFinite ? String(Int(songDuration.rounded())) : ""
+        return [bundleIdentifier ?? "", songTitle, artistName, album, durationKey]
             .joined(separator: "\u{0}")
     }
 
