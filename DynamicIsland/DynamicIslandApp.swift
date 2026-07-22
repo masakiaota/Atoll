@@ -1459,12 +1459,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             window.titleVisibility = .hidden
             window.contentView = NSHostingView(rootView: OnboardingView(
                 onFinish: {
+                    self.coordinator.firstLaunch = false
                     window.orderOut(nil)
                     NSApp.setActivationPolicy(.accessory)
                     window.close()
                     NSApp.deactivate()
                 },
                 onOpenSettings: {
+                    self.coordinator.firstLaunch = false
                     window.close()
                     SettingsWindowController.shared.showWindow()
                 }

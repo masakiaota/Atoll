@@ -78,6 +78,10 @@ Atoll turns the MacBook notch into a focused command surface for media, system i
 2) Open the DMG and drag Atoll into Applications.
 3) Launch Atoll and grant the requested permissions.
 
+## Building for local use
+
+For long-term use of this fork on a personal Mac, build the Release configuration with an Apple Development certificate. See [ローカルでAtollを使う](docs/local-use.md) for the signing, build, and verification steps.
+
 ## Quick Start
 - Hover near the notch to expand; click to enter controls.
 - Use tabs for Media, Stats, Timers, Clipboard, and more.

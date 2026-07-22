@@ -625,16 +625,6 @@ struct ContentView: View {
                 ? -(vm.closedNotchSize.height + pillTopOffset + currentShadowPadding + 10)
                 : 0
             )
-            .onAppear(perform: {
-                if coordinator.firstLaunch {
-                    // Single open during first launch; closeHello() handles the timed close.
-                    runAfter(1) {
-                        withAnimation(vm.animation) {
-                            openNotch()
-                        }
-                    }
-                }
-            })
             .onChange(of: vm.notchState) { _, newState in
                 // Update smart monitoring based on notch state
                 if enableStatsFeature {
@@ -886,15 +876,7 @@ struct ContentView: View {
       func NotchLayout() -> some View {
           VStack(alignment: .leading) {
               VStack(alignment: .leading) {
-                  if coordinator.firstLaunch {
-                      Spacer()
-                      HelloAnimation().frame(width: 200, height: 80).onAppear(perform: {
-                          vm.closeHello()
-                      })
-                      .padding(.top, 40)
-                      Spacer()
-                  } else {
-                        let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
+                      let hasMusicMetadata = !musicManager.songTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
                             || !musicManager.artistName.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty
                       let hasActiveMusicSnapshot: Bool = {
                           if musicManager.isPlaying { return true }
@@ -1093,7 +1075,6 @@ struct ContentView: View {
                               }
                           }
                       }
-                  }
               }
               .conditionalModifier(shouldFixSizeForSneakPeek()) { view in
                   view
@@ -1922,7 +1903,6 @@ struct ContentView: View {
             && !isMusicHUDDeferredAfterUnlock
             && !isCurrentScreenExpansionVisible
             && (!musicManager.isPlayerIdle || musicManager.bundleIdentifier != nil)
-            && !coordinator.firstLaunch
     }
 
     private func handleClosedMusicWaveformTapIfNeeded() -> Bool {
@@ -2182,7 +2162,7 @@ struct ContentView: View {
     }
 
     private func shouldPreventAutoClose() -> Bool {
-        coordinator.firstLaunch || hasAnyActivePopovers() || vm.isAutoCloseSuppressed || SharingStateManager.shared.preventNotchClose || (Defaults[.terminalStickyMode] && coordinator.currentView == .terminal)
+        hasAnyActivePopovers() || vm.isAutoCloseSuppressed || SharingStateManager.shared.preventNotchClose || (Defaults[.terminalStickyMode] && coordinator.currentView == .terminal)
     }
     
     // Helper to prevent rapid haptic feedback

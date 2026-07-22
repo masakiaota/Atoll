@@ -690,11 +690,7 @@ struct NotchHomeView: View {
     let albumArtNamespace: Namespace.ID
     
     var body: some View {
-        Group {
-            if !coordinator.firstLaunch {
-                mainContent
-            }
-        }
+        mainContent
         .transition(.opacity.combined(with: .blurReplace))
     }
 
