@@ -403,6 +403,7 @@ class CalendarManager: ObservableObject {
 
     func refreshIncompleteReminders() async {
         guard hasReminderAccess else {
+            incompleteReminders = []
             if reminderAuthorizationStatus == .denied || reminderAuthorizationStatus == .restricted {
                 reminderLoadState = .failed(String(localized: "Reminder access is not available."))
             }

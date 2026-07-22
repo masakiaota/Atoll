@@ -709,7 +709,7 @@ struct NotchHomeView: View {
                     MinimalisticMusicPlayerView(albumArtNamespace: albumArtNamespace)
                 }
             } else {
-                FocusHomeView(albumArtNamespace: albumArtNamespace)
+                FocusHomeView()
                     .environmentObject(vm)
             }
         }

@@ -45,7 +45,7 @@ func resolvedOpenNotchSize(for view: NotchViews, isDynamicIslandMode: Bool) -> C
         : openNotchSize
 
     if !minimalistic && view == .home {
-        size.height = 360
+        size.height = 480
     }
     return size
 }
@@ -316,6 +316,19 @@ func getScreenFrame(_ screen: String? = nil) -> CGRect? {
     }
     
     return nil
+}
+
+/// Width used by the closed focus-task surface on a display without a
+/// physical notch. It grows to 2.5 times the configured closed width, but the
+/// visible surface never exceeds one quarter of that display.
+func focusTaskClosedWidth(screen screenName: String?, baseWidth: CGFloat) -> CGFloat {
+    let screen = screenName.flatMap { name in
+        NSScreen.screens.first { $0.localizedName == name }
+    } ?? NSScreen.main
+
+    guard let screen, screen.safeAreaInsets.top <= 0 else { return baseWidth }
+    let maximumWidth = max(1, screen.frame.width / 4)
+    return min(baseWidth * 2.5, maximumWidth)
 }
 
 func getClosedNotchSize(screen: String? = nil) -> CGSize {

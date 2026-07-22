@@ -30,7 +30,12 @@ struct FocusTaskLiveActivity: View {
     }
 
     private func nonNotchContent(task: ReminderItem, date: Date) -> some View {
-        HStack(spacing: 8) {
+        let width = focusTaskClosedWidth(
+            screen: vm.screen,
+            baseWidth: vm.closedNotchSize.width
+        )
+
+        return HStack(spacing: 8) {
             FocusTaskIndicator(size: 18)
             Text(task.title)
                 .font(.system(size: 12, weight: .semibold))
@@ -40,24 +45,25 @@ struct FocusTaskLiveActivity: View {
             elapsedText(date)
         }
         .padding(.horizontal, 11)
-        .frame(width: vm.closedNotchSize.width, height: vm.effectiveClosedNotchHeight)
+        .frame(width: width, height: vm.effectiveClosedNotchHeight)
         .background(Color.black)
     }
 
     private func physicalNotchContent(date: Date) -> some View {
         let height = vm.effectiveClosedNotchHeight
+        let wingWidth: CGFloat = 72
 
         return HStack(spacing: 0) {
-            FocusTaskIndicator(size: min(20, max(14, height - 10)))
-                .frame(width: height + 12, height: height)
+            Color.clear
+                .frame(width: wingWidth, height: height)
 
             Rectangle()
                 .fill(.black)
                 .frame(width: vm.closedNotchSize.width, height: height)
 
             elapsedText(date)
-                .padding(.horizontal, 9)
-                .frame(height: height)
+                .frame(width: wingWidth, height: height)
+                .background(Color.black)
         }
         .frame(height: height)
     }

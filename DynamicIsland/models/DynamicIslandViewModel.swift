@@ -53,6 +53,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     @Published var isTimerPopoverActive: Bool = false
     @Published var shouldRecheckHover: Bool = false
     @Published var isScrollGestureActive: Bool = false
+    @Published var isHoveringMediaPlayer: Bool = false
     private var scrollGestureSuppressionTokens: Set<UUID> = []
     @Published private(set) var isAutoCloseSuppressed: Bool = false
     private var autoCloseSuppressionTokens: Set<UUID> = []
@@ -383,6 +384,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         closedNotchSize = targetSize
         notchState = .closed
         resetScrollGestureSuppression()
+        isHoveringMediaPlayer = false
         resetAutoCloseSuppression()
 
         // Set the current view to shelf if it contains files and the user enables openShelfByDefault
@@ -401,6 +403,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             closedNotchSize = targetSize
             notchState = .closed
             resetScrollGestureSuppression()
+            isHoveringMediaPlayer = false
             resetAutoCloseSuppression()
         }
     }

@@ -88,9 +88,9 @@ final class FocusTaskManager: ObservableObject {
         )
         isCompleting = false
 
-        if completed {
+        if completed, selectedTask?.id == task.id {
             clear()
-        } else {
+        } else if !completed, selectedTask?.id == task.id {
             completionError = calendarManager.reminderMutationError
         }
     }

@@ -395,6 +395,17 @@ struct ContentView: View {
         return screen.safeAreaInsets.top <= 0
     }
 
+    private var showsPhysicalFocusLiveActivity: Bool {
+        !isNonNotchScreen
+            && vm.notchState == .closed
+            && focusTaskManager.hasActiveTask
+            && !vm.hideOnClosed
+            && !lockScreenManager.isLocked
+            && !isCurrentScreenExpansionVisible
+            && !isSneakPeekVisibleOnCurrentScreen
+            && !(capsLockManager.isCapsLockActive && enableCapsLockIndicator)
+    }
+
     /// Whether the global sneak peek is visible on this specific screen.
     private var isSneakPeekVisibleOnCurrentScreen: Bool {
         guard coordinator.sneakPeek.show else { return false }
@@ -530,7 +541,7 @@ struct ContentView: View {
             .frame(alignment: .top)
             .padding(.horizontal, notchHorizontalPadding)
             .padding([.horizontal, .bottom], vm.notchState == .open ? 12 : 0)
-            .background(.black)
+            .background(showsPhysicalFocusLiveActivity ? Color.clear : Color.black)
             .clipShape(resolvedClipShape)
             .compositingGroup()
             .shadow(
@@ -2375,7 +2386,9 @@ struct ContentView: View {
     }
 
     private func canPerformSkipGesture() -> Bool {
-        let canSkipInOpenHome = vm.notchState == .open && coordinator.currentView == .home
+        let canSkipInOpenHome = vm.notchState == .open
+            && coordinator.currentView == .home
+            && (Defaults[.enableMinimalisticUI] || vm.isHoveringMediaPlayer)
         let canSkipInClosedMusic = !Defaults[.openNotchOnHover] && isClosedMusicGestureContext
 
         return enableHorizontalMusicGestures
