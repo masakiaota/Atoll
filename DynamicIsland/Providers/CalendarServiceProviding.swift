@@ -171,7 +171,7 @@ class CalendarService: CalendarServiceProviding {
 
         return reminders
             .filter { !$0.isCompleted }
-            .compactMap(ReminderItem.init)
+            .compactMap(ReminderItem.init(from:))
             .sorted(by: Self.reminderSort)
     }
 
