@@ -395,14 +395,18 @@ struct ContentView: View {
         return screen.safeAreaInsets.top <= 0
     }
 
-    private var showsPhysicalFocusLiveActivity: Bool {
-        !isNonNotchScreen
-            && vm.notchState == .closed
+    private var canShowFocusLiveActivity: Bool {
+        vm.notchState == .closed
             && focusTaskManager.hasActiveTask
             && !vm.hideOnClosed
             && !lockScreenManager.isLocked
             && !isCurrentScreenExpansionVisible
             && !isSneakPeekVisibleOnCurrentScreen
+    }
+
+    private var showsPhysicalFocusLiveActivity: Bool {
+        !isNonNotchScreen
+            && canShowFocusLiveActivity
             && !(capsLockManager.isCapsLockActive && enableCapsLockIndicator)
     }
 
@@ -953,19 +957,7 @@ struct ContentView: View {
                       } else if vm.notchState == .closed && capsLockManager.isCapsLockActive && Defaults[.enableCapsLockIndicator] && !vm.hideOnClosed && !lockScreenManager.isLocked {
                           InlineHUD(type: .constant(.capsLock), value: .constant(1.0), icon: .constant(""), hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(AnyTransition.move(edge: .trailing).combined(with: .opacity))
-                      } else if isCurrentScreenExpansionVisible
-                            && currentScreenExpansionType == .music
-                            && canShowMusicDuringExpansion
-                            && musicPairingEligible {
-                          MusicLiveActivity(secondary: musicSecondary)
-                              .id("closed-music-live-activity")
-                              .transition(closedLiveActivitySwapTransition)
-                      } else if !isCurrentScreenExpansionVisible
-                            && !isSneakPeekVisibleOnCurrentScreen
-                            && vm.notchState == .closed
-                            && focusTaskManager.hasActiveTask
-                            && !vm.hideOnClosed
-                            && !lockScreenManager.isLocked {
+                      } else if canShowFocusLiveActivity {
                           FocusTaskLiveActivity(isNonNotchScreen: isNonNotchScreen)
                               .id("closed-focus-task-live-activity")
                               .transition(closedLiveActivitySwapTransition)

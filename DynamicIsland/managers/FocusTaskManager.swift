@@ -19,7 +19,6 @@ final class FocusTaskManager: ObservableObject {
     @Published private(set) var accumulatedElapsed: TimeInterval = 0
     @Published private(set) var runningSince: Date?
     @Published private(set) var isCompleting = false
-    @Published private(set) var completionError: String?
 
     private let calendarManager: CalendarManager
     private var remindersCancellable: AnyCancellable?
@@ -42,8 +41,6 @@ final class FocusTaskManager: ObservableObject {
     }
 
     func select(_ reminder: ReminderItem, at date: Date = Date()) {
-        completionError = nil
-
         if selectedTask?.id == reminder.id {
             selectedTask = reminder
             return
@@ -74,14 +71,12 @@ final class FocusTaskManager: ObservableObject {
         selectedTask = nil
         accumulatedElapsed = 0
         runningSince = nil
-        completionError = nil
     }
 
     func completeSelectedTask() async {
         guard let task = selectedTask, !isCompleting else { return }
 
         isCompleting = true
-        completionError = nil
         let completed = await calendarManager.setReminderCompleted(
             reminderID: task.id,
             completed: true
@@ -90,8 +85,6 @@ final class FocusTaskManager: ObservableObject {
 
         if completed, selectedTask?.id == task.id {
             clear()
-        } else if !completed, selectedTask?.id == task.id {
-            completionError = calendarManager.reminderMutationError
         }
     }
 

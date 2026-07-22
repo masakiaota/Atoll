@@ -79,6 +79,14 @@ struct FocusHomeView: View {
                     .frame(height: 54)
             }
 
+            if let error = calendarManager.reminderMutationError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+            }
+
             HStack(alignment: .top, spacing: 10) {
                 VStack(spacing: 8) {
                     FourWeekCalendarView(selectedDate: $selectedDate)
@@ -448,8 +456,6 @@ private struct DayTimelinePane: View {
     let openReminders: () -> Void
 
     @ObservedObject private var calendarManager = CalendarManager.shared
-    @ObservedObject private var focusTaskManager = FocusTaskManager.shared
-    @State private var completingReminderIDs: Set<String> = []
 
     private var timelineItems: [DayTimelineItem] {
         let eventItems = events.map(DayTimelineItem.event)
@@ -480,14 +486,6 @@ private struct DayTimelinePane: View {
             }
             .padding(.horizontal, 10)
 
-            if let error = calendarManager.reminderMutationError {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-                    .padding(.horizontal, 10)
-            }
-
             timeline
         }
         .padding(.vertical, 8)
@@ -499,16 +497,17 @@ private struct DayTimelinePane: View {
 
     @ViewBuilder
     private var timeline: some View {
-        if timelineItems.isEmpty && isLoading {
+        let items = timelineItems
+        if items.isEmpty && isLoading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if timelineItems.isEmpty && !hasCalendarAccess {
+        } else if items.isEmpty && !hasCalendarAccess {
             emptyMessage("Calendar access is not available.")
-        } else if timelineItems.isEmpty {
+        } else if items.isEmpty {
             emptyMessage("No events or reminders")
         } else {
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(timelineItems) { item in
+                    ForEach(items) { item in
                         timelineRow(item)
                     }
                 }
@@ -538,7 +537,10 @@ private struct DayTimelinePane: View {
             .help("Open in Calendar")
             .accessibilityLabel("Open \(event.title) in Calendar")
         case .reminder(let reminder):
-            reminderRow(reminder)
+            ReminderRow(
+                reminder: reminder,
+                subtitle: reminderSubtitle(reminder)
+            )
         }
     }
 
@@ -566,36 +568,6 @@ private struct DayTimelinePane: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
-    }
-
-    private func reminderRow(_ reminder: ReminderItem) -> some View {
-        ReminderRow(
-            reminder: reminder,
-            subtitle: reminderSubtitle(reminder),
-            isFocused: focusTaskManager.selectedTask?.id == reminder.id,
-            isCompleting: completingReminderIDs.contains(reminder.id),
-            onComplete: { complete(reminder) },
-            onFocus: {
-                if focusTaskManager.selectedTask?.id == reminder.id {
-                    focusTaskManager.clear()
-                } else {
-                    focusTaskManager.select(reminder)
-                }
-            }
-        )
-    }
-
-    private func complete(_ reminder: ReminderItem) {
-        guard !completingReminderIDs.contains(reminder.id) else { return }
-        completingReminderIDs.insert(reminder.id)
-        Task {
-            if focusTaskManager.selectedTask?.id == reminder.id {
-                await focusTaskManager.completeSelectedTask()
-            } else {
-                await calendarManager.setReminderCompleted(reminderID: reminder.id, completed: true)
-            }
-            completingReminderIDs.remove(reminder.id)
-        }
     }
 
     private func reminderSubtitle(_ reminder: ReminderItem) -> String {
@@ -636,7 +608,6 @@ private struct NoDateReminderPane: View {
 
     @ObservedObject private var calendarManager = CalendarManager.shared
     @ObservedObject private var focusTaskManager = FocusTaskManager.shared
-    @State private var completingReminderIDs: Set<String> = []
 
     private var reminders: [ReminderItem] {
         var reminders = calendarManager.incompleteReminders.filter { $0.dueDate == nil }
@@ -671,14 +642,6 @@ private struct NoDateReminderPane: View {
             }
             .padding(.horizontal, 10)
 
-            if let error = calendarManager.reminderMutationError {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-                    .padding(.horizontal, 10)
-            }
-
             reminderList
         }
         .padding(.vertical, 8)
@@ -705,17 +668,7 @@ private struct NoDateReminderPane: View {
                     ForEach(reminders) { reminder in
                         ReminderRow(
                             reminder: reminder,
-                            subtitle: reminder.calendar.title,
-                            isFocused: focusTaskManager.selectedTask?.id == reminder.id,
-                            isCompleting: completingReminderIDs.contains(reminder.id),
-                            onComplete: { complete(reminder) },
-                            onFocus: {
-                                if focusTaskManager.selectedTask?.id == reminder.id {
-                                    focusTaskManager.clear()
-                                } else {
-                                    focusTaskManager.select(reminder)
-                                }
-                            }
+                            subtitle: reminder.calendar.title
                         )
                     }
                 }
@@ -723,35 +676,25 @@ private struct NoDateReminderPane: View {
             .scrollIndicators(.never)
         }
     }
-
-    private func complete(_ reminder: ReminderItem) {
-        guard !completingReminderIDs.contains(reminder.id) else { return }
-        completingReminderIDs.insert(reminder.id)
-        Task {
-            if focusTaskManager.selectedTask?.id == reminder.id {
-                await focusTaskManager.completeSelectedTask()
-            } else {
-                await calendarManager.setReminderCompleted(reminderID: reminder.id, completed: true)
-            }
-            completingReminderIDs.remove(reminder.id)
-        }
-    }
 }
 
 private struct ReminderRow: View {
     let reminder: ReminderItem
     let subtitle: String
-    let isFocused: Bool
-    let isCompleting: Bool
-    let onComplete: () -> Void
-    let onFocus: () -> Void
 
+    @ObservedObject private var calendarManager = CalendarManager.shared
+    @ObservedObject private var focusTaskManager = FocusTaskManager.shared
+    @State private var isCompleting = false
     @State private var isHoveringFocus = false
     @State private var isHoveringCompletion = false
 
+    private var isFocused: Bool {
+        focusTaskManager.selectedTask?.id == reminder.id
+    }
+
     var body: some View {
         HStack(spacing: 7) {
-            Button(action: onComplete) {
+            Button(action: complete) {
                 ZStack {
                     Circle()
                         .stroke(Color(nsColor: reminder.calendar.color), lineWidth: 1.5)
@@ -775,7 +718,7 @@ private struct ReminderRow: View {
             .help("Complete reminder")
             .accessibilityLabel("Complete \(reminder.title)")
 
-            Button(action: onFocus) {
+            Button(action: toggleFocus) {
                 HStack(spacing: 6) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(reminder.title)
@@ -792,12 +735,12 @@ private struct ReminderRow: View {
                         Text(isFocused && isHoveringFocus ? "Clear" : (isFocused ? "On" : "Focus"))
                             .lineLimit(1)
                     }
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .frame(width: 64, alignment: .trailing)
-                        .layoutPriority(1)
-                        .opacity(isFocused || isHoveringFocus ? 1 : 0)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(width: 64, alignment: .trailing)
+                    .layoutPriority(1)
+                    .opacity(isFocused || isHoveringFocus ? 1 : 0)
                 }
                 .padding(.horizontal, 3)
                 .padding(.vertical, 4)
@@ -819,13 +762,72 @@ private struct ReminderRow: View {
             }
         }
     }
+
+    private func toggleFocus() {
+        if isFocused {
+            focusTaskManager.clear()
+        } else {
+            focusTaskManager.select(reminder)
+        }
+    }
+
+    private func complete() {
+        guard !isCompleting else { return }
+        isCompleting = true
+        Task {
+            if isFocused {
+                await focusTaskManager.completeSelectedTask()
+            } else {
+                await calendarManager.setReminderCompleted(reminderID: reminder.id, completed: true)
+            }
+            isCompleting = false
+        }
+    }
 }
 
 private struct CompactMusicActivity: View {
     @EnvironmentObject private var vm: DynamicIslandViewModel
     @ObservedObject private var musicManager = MusicManager.shared
+    @State private var sliderValue: Double = 0
+    @State private var isDraggingSlider = false
+    @State private var lastDragged = Date.distantPast
+
+    private var canSeek: Bool {
+        musicManager.songDuration.isFinite
+            && musicManager.songDuration > 0
+            && !musicManager.isLiveStream
+    }
+
+    private var isProgressTimelinePaused: Bool {
+        !musicManager.isPlaying || musicManager.playbackRate <= 0
+    }
 
     var body: some View {
+        GeometryReader { geometry in
+            let showsSeekBar = canSeek && geometry.size.width >= 560
+            HStack(spacing: 12) {
+                trackInfo
+                    .frame(width: showsSeekBar ? 180 : nil, alignment: .leading)
+                    .frame(maxWidth: showsSeekBar ? nil : .infinity, alignment: .leading)
+
+                if showsSeekBar {
+                    seekBar
+                        .frame(maxWidth: .infinity)
+                        .layoutPriority(1)
+                }
+
+                playbackControls
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onHover { vm.isHoveringMediaPlayer = $0 }
+        .onDisappear { vm.isHoveringMediaPlayer = false }
+        .accessibilityIdentifier("focus-compact-music")
+    }
+
+    private var trackInfo: some View {
         HStack(spacing: 8) {
             Button(action: musicManager.openMusicApp) {
                 Image(nsImage: musicManager.albumArt)
@@ -848,21 +850,53 @@ private struct CompactMusicActivity: View {
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
+    private var playbackControls: some View {
+        HStack(spacing: 14) {
             musicButton("backward.fill", label: "Previous track", action: musicManager.previousTrack)
-            musicButton(
-                musicManager.isPlaying ? "pause.fill" : "play.fill",
-                label: musicManager.isPlaying ? "Pause music" : "Play music",
-                action: musicManager.togglePlay
-            )
+            playPauseButton
             musicButton("forward.fill", label: "Next track", action: musicManager.nextTrack)
         }
-        .padding(.horizontal, 9)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onHover { vm.isHoveringMediaPlayer = $0 }
-        .onDisappear { vm.isHoveringMediaPlayer = false }
-        .accessibilityIdentifier("focus-compact-music")
+    }
+
+    private var seekBar: some View {
+        TimelineView(.animation(paused: isProgressTimelinePaused)) { timeline in
+            MusicSliderView(
+                sliderValue: $sliderValue,
+                duration: $musicManager.songDuration,
+                lastDragged: $lastDragged,
+                color: musicManager.avgColor,
+                dragging: $isDraggingSlider,
+                currentDate: timeline.date,
+                timestampDate: musicManager.timestampDate,
+                elapsedTime: musicManager.elapsedTime,
+                playbackRate: musicManager.playbackRate,
+                isPlaying: musicManager.isPlaying,
+                isLiveStream: false,
+                trackSignature: musicManager.trackSignature,
+                onValueChange: { musicManager.seek(to: $0) },
+                labelLayout: .inline,
+                restingTrackHeight: 3,
+                draggingTrackHeight: 5,
+                sliderHitHeight: 24,
+                showsThumbOnHover: true
+            )
+        }
+        .frame(height: 24)
+    }
+
+    private var playPauseButton: some View {
+        Button(action: musicManager.togglePlay) {
+            Image(systemName: musicManager.isPlaying ? "pause.fill" : "play.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.black)
+                .frame(width: 30, height: 30)
+                .background(Color.white, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(musicManager.isPlaying ? "Pause music" : "Play music")
     }
 
     private func musicButton(

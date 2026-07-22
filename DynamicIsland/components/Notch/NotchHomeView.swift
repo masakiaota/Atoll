@@ -389,7 +389,8 @@ struct MusicControlsView: View {
                 elapsedTime: musicManager.elapsedTime,
                 playbackRate: musicManager.playbackRate,
                 isPlaying: musicManager.isPlaying,
-                isLiveStream: musicManager.isLiveStream
+                isLiveStream: musicManager.isLiveStream,
+                trackSignature: musicManager.trackSignature
             ) { newValue in
                 guard !musicManager.isLiveStream else { return }
                 MusicManager.shared.seek(to: newValue)
@@ -737,11 +738,27 @@ struct MusicSliderView: View {
     let playbackRate: Double
     let isPlaying: Bool
     let isLiveStream: Bool
+    let trackSignature: String
     var onValueChange: (Double) -> Void
     var labelLayout: TimeLabelLayout = .stacked
     var trailingLabel: TrailingLabel = .duration
     var restingTrackHeight: CGFloat = 8
     var draggingTrackHeight: CGFloat = 14
+    var sliderHitHeight: CGFloat?
+    var showsThumbOnHover = false
+
+    @State private var pendingSeek: PendingSeek?
+
+    private struct PendingSeek {
+        let requestedAt: Date
+        let externalTimestampAtRequest: Date
+        let trackSignature: String
+        var optimisticPosition: Double
+        var lastDisplayUpdate: Date
+    }
+
+    private let seekAcknowledgementTolerance: TimeInterval = 0.25
+    private let seekTimeout: TimeInterval = 2.5
 
     enum TimeLabelLayout {
         case stacked
@@ -767,26 +784,36 @@ struct MusicSliderView: View {
             }
         }
         .onAppear {
-            guard !isLiveStream else { return }
-            guard !dragging else { return }
-            setSliderValueWithoutAnimation(MusicManager.shared.estimatedPlaybackPosition())
+            synchronizeSlider(at: Date())
         }
-        .onChange(of: currentDate) { newDate in
-            guard !isLiveStream else { return }
-            guard !dragging, timestampDate.timeIntervalSince(lastDragged) > -1 else { return }
-            setSliderValueWithoutAnimation(MusicManager.shared.estimatedPlaybackPosition(at: newDate))
+        .onChange(of: currentDate) { _, newDate in
+            synchronizeSlider(at: newDate)
         }
-        .onChange(of: isPlaying) { _, playing in
-            // Snap slider to the exact position when music pauses so
-            // the in-flight animation doesn't coast past the true value.
-            if !playing {
-                sliderValue = MusicManager.shared.estimatedPlaybackPosition()
-            }
+        .onChange(of: elapsedTime) { _, _ in
+            synchronizeSlider(at: Date())
         }
-        .onChange(of: isLiveStream) { isLive in
+        .onChange(of: timestampDate) { _, _ in
+            synchronizeSlider(at: Date())
+        }
+        .onChange(of: isPlaying) { _, _ in
+            synchronizeSlider(at: Date())
+        }
+        .onChange(of: trackSignature) { _, _ in
+            pendingSeek = nil
+            synchronizeSlider(at: Date())
+        }
+        .onChange(of: isLiveStream) { _, isLive in
             if isLive {
+                pendingSeek = nil
                 sliderValue = 0
             }
+        }
+        .task(id: pendingSeek?.requestedAt) {
+            guard let requestDate = pendingSeek?.requestedAt else { return }
+            try? await Task.sleep(for: .seconds(seekTimeout))
+            guard !Task.isCancelled, pendingSeek?.requestedAt == requestDate else { return }
+            pendingSeek = nil
+            setSliderValueWithoutAnimation(MusicManager.shared.estimatedPlaybackPosition())
         }
     }
 
@@ -795,6 +822,50 @@ struct MusicSliderView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             sliderValue = value
+        }
+    }
+
+    private func synchronizeSlider(at date: Date) {
+        guard !isLiveStream, !dragging else { return }
+
+        let externalPosition = MusicManager.shared.estimatedPlaybackPosition(at: date)
+        guard var pendingSeek else {
+            setSliderValueWithoutAnimation(externalPosition)
+            return
+        }
+
+        guard pendingSeek.trackSignature == trackSignature else {
+            self.pendingSeek = nil
+            setSliderValueWithoutAnimation(externalPosition)
+            return
+        }
+
+        let elapsed = max(0, date.timeIntervalSince(pendingSeek.requestedAt))
+        if date > pendingSeek.lastDisplayUpdate {
+            let currentPlaybackRate = isPlaying ? playbackRate : 0
+            pendingSeek.optimisticPosition = min(
+                max(
+                    0,
+                    pendingSeek.optimisticPosition
+                        + date.timeIntervalSince(pendingSeek.lastDisplayUpdate) * currentPlaybackRate
+                ),
+                duration
+            )
+            pendingSeek.lastDisplayUpdate = date
+        }
+        let responseIsFresh = timestampDate > pendingSeek.externalTimestampAtRequest
+        let acknowledged = responseIsFresh
+            && abs(externalPosition - pendingSeek.optimisticPosition) <= seekAcknowledgementTolerance
+
+        if acknowledged {
+            self.pendingSeek = nil
+            setSliderValueWithoutAnimation(externalPosition)
+        } else if elapsed < seekTimeout {
+            self.pendingSeek = pendingSeek
+            setSliderValueWithoutAnimation(pendingSeek.optimisticPosition)
+        } else {
+            self.pendingSeek = nil
+            setSliderValueWithoutAnimation(externalPosition)
         }
     }
 
@@ -819,16 +890,18 @@ struct MusicSliderView: View {
             Text(timeString(from: sliderValue))
                 .font(inlineLabelFont)
                 .foregroundColor(timeLabelColor)
-                .frame(width: 36, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 36, alignment: .leading)
 
             sliderCore
-                .frame(height: sliderFrameHeight)
+                .frame(height: max(sliderFrameHeight, sliderHitHeight ?? 0))
                 .frame(maxWidth: .infinity)
 
             Text(trailingTimeText)
                 .font(inlineLabelFont)
                 .foregroundColor(timeLabelColor)
-                .frame(width: 42, alignment: .trailing)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 42, alignment: .trailing)
         }
     }
 
@@ -861,9 +934,20 @@ struct MusicSliderView: View {
             color: sliderTint,
             dragging: $dragging,
             lastDragged: $lastDragged,
-            onValueChange: onValueChange,
+            onValueChange: { newValue in
+                let requestedAt = Date()
+                pendingSeek = PendingSeek(
+                    requestedAt: requestedAt,
+                    externalTimestampAtRequest: timestampDate,
+                    trackSignature: trackSignature,
+                    optimisticPosition: newValue,
+                    lastDisplayUpdate: requestedAt
+                )
+                onValueChange(newValue)
+            },
             restingTrackHeight: restingTrackHeight,
-            draggingTrackHeight: draggingTrackHeight
+            draggingTrackHeight: draggingTrackHeight,
+            showsThumbOnHover: showsThumbOnHover
         )
     }
 
@@ -928,6 +1012,7 @@ struct CustomSlider: View {
     var thumbSize: CGFloat = 12
     var restingTrackHeight: CGFloat = 8
     var draggingTrackHeight: CGFloat = 14
+    var showsThumbOnHover = false
     
     @State private var isHovering: Bool = false
     @Default(.enableRealTimeWaveform) var enableRealTimeWaveform
@@ -971,6 +1056,15 @@ struct CustomSlider: View {
                 }
             }
             .frame(height: max(restingTrackHeight, draggingTrackHeight), alignment: .bottom)
+            .overlay(alignment: .leading) {
+                if showsThumbOnHover && (isHovering || dragging) && rangeSpan > 0 {
+                    Circle()
+                        .fill(color)
+                        .frame(width: thumbSize, height: thumbSize)
+                        .offset(x: min(max(filledTrackWidth - thumbSize / 2, 0), max(width - thumbSize, 0)))
+                }
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
             .contentShape(Rectangle())
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0)

@@ -500,6 +500,11 @@ class MusicManager: ObservableObject {
     @Published var usingAppIconForArtwork: Bool = false
     @Published private(set) var skipGesturePulse: SkipGesturePulse?
 
+    var trackSignature: String {
+        [bundleIdentifier ?? "", songTitle, artistName, album, String(songDuration)]
+            .joined(separator: "\u{0}")
+    }
+
     // MARK: - Lyrics Properties
     @Published var currentLyrics: String = ""
     @Published var syncedLyrics: [LyricLine] = []
