@@ -39,7 +39,7 @@ struct FocusHomeView: View {
     }
 
     private var scheduleEvents: [EventModel] {
-        calendarManager.events.filter { !$0.type.isReminder }
+        calendarManager.focusTimelineEvents
     }
 
     var body: some View {
@@ -64,10 +64,14 @@ struct FocusHomeView: View {
                 await calendarManager.checkReminderAuthorization()
             }
             await calendarManager.updateCurrentDate(selectedDate)
+            await calendarManager.updateFocusTimelineEvents(for: selectedDate)
             await calendarManager.refreshIncompleteReminders()
         }
         .onChange(of: selectedDate) { _, date in
-            Task { await calendarManager.updateCurrentDate(date) }
+            Task {
+                await calendarManager.updateCurrentDate(date)
+                await calendarManager.updateFocusTimelineEvents(for: date)
+            }
         }
     }
 
@@ -446,6 +450,13 @@ private enum DayTimelineItem: Identifiable {
     }
 }
 
+private struct DayTimelineEntry: Identifiable {
+    let item: DayTimelineItem
+    let isUpcoming: Bool
+
+    var id: String { item.id }
+}
+
 private struct DayTimelinePane: View {
     @Environment(\.openURL) private var openURL
     let selectedDate: Date
@@ -457,16 +468,71 @@ private struct DayTimelinePane: View {
 
     @ObservedObject private var calendarManager = CalendarManager.shared
 
-    private var timelineItems: [DayTimelineItem] {
-        let eventItems = events.map(DayTimelineItem.event)
+    private static let estimatedRowHeight: CGFloat = 44
+    private static let rowSpacing: CGFloat = 2
+    private static let relativeDayFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    private var selectedDayInterval: DateInterval? {
+        Calendar.current.dateInterval(of: .day, for: selectedDate)
+    }
+
+    private var selectedDayItems: [DayTimelineItem] {
+        guard let interval = selectedDayInterval else { return [] }
+        let eventItems = events
+            .filter { $0.start < interval.end && $0.end > interval.start }
+            .map(DayTimelineItem.event)
         let reminderItems = calendarManager.incompleteReminders.compactMap { reminder -> DayTimelineItem? in
             guard shouldShowReminder(reminder) else { return nil }
             return .reminder(reminder)
         }
-        return (eventItems + reminderItems).sorted { lhs, rhs in
+        return sorted(eventItems + reminderItems)
+    }
+
+    private var upcomingItems: [DayTimelineItem] {
+        guard let interval = selectedDayInterval,
+              let lookaheadEnd = Calendar.current.date(
+                byAdding: .day,
+                value: CalendarManager.focusTimelineFetchDays,
+                to: interval.start
+              )
+        else { return [] }
+
+        let eventItems = events
+            .filter { $0.start >= interval.end && $0.start < lookaheadEnd }
+            .map(DayTimelineItem.event)
+        let reminderItems = calendarManager.incompleteReminders.compactMap { reminder -> DayTimelineItem? in
+            guard let dueDate = reminder.dueDate,
+                  dueDate >= interval.end,
+                  dueDate < lookaheadEnd
+            else { return nil }
+            return .reminder(reminder)
+        }
+        return sorted(eventItems + reminderItems)
+    }
+
+    private func sorted(_ items: [DayTimelineItem]) -> [DayTimelineItem] {
+        items.sorted { lhs, rhs in
             if lhs.date == rhs.date { return lhs.sortPriority < rhs.sortPriority }
             return lhs.date < rhs.date
         }
+    }
+
+    private func timelineEntries(fitting height: CGFloat) -> [DayTimelineEntry] {
+        let rowExtent = Self.estimatedRowHeight + Self.rowSpacing
+        let visibleRowCapacity = max(Int((height + Self.rowSpacing) / rowExtent), 1)
+        let availableUpcomingRows = max(visibleRowCapacity - selectedDayItems.count, 0)
+        let selectedEntries = selectedDayItems.map {
+            DayTimelineEntry(item: $0, isUpcoming: false)
+        }
+        let upcomingEntries = upcomingItems.prefix(availableUpcomingRows).map {
+            DayTimelineEntry(item: $0, isUpcoming: true)
+        }
+        return selectedEntries + upcomingEntries
     }
 
     private func shouldShowReminder(_ reminder: ReminderItem) -> Bool {
@@ -504,20 +570,26 @@ private struct DayTimelinePane: View {
         .accessibilityIdentifier("focus-day-timeline")
     }
 
-    @ViewBuilder
     private var timeline: some View {
-        let items = timelineItems
-        if items.isEmpty && isLoading {
+        GeometryReader { geometry in
+            timelineContent(fitting: geometry.size.height)
+        }
+    }
+
+    @ViewBuilder
+    private func timelineContent(fitting height: CGFloat) -> some View {
+        let entries = timelineEntries(fitting: height)
+        if entries.isEmpty && isLoading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if items.isEmpty && !hasCalendarAccess {
+        } else if entries.isEmpty && !hasCalendarAccess {
             emptyMessage("Calendar access is not available.")
-        } else if items.isEmpty {
+        } else if entries.isEmpty {
             emptyMessage("No events or reminders")
         } else {
             ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(items) { item in
-                        timelineRow(item)
+                LazyVStack(spacing: Self.rowSpacing) {
+                    ForEach(entries) { entry in
+                        timelineRow(entry)
                     }
                 }
             }
@@ -534,13 +606,13 @@ private struct DayTimelinePane: View {
     }
 
     @ViewBuilder
-    private func timelineRow(_ item: DayTimelineItem) -> some View {
-        switch item {
+    private func timelineRow(_ entry: DayTimelineEntry) -> some View {
+        switch entry.item {
         case .event(let event):
             Button {
                 if let url = event.calendarAppURL() { openURL(url) }
             } label: {
-                eventRow(event)
+                eventRow(event, isUpcoming: entry.isUpcoming)
             }
             .buttonStyle(.plain)
             .help("Open in Calendar")
@@ -548,12 +620,13 @@ private struct DayTimelinePane: View {
         case .reminder(let reminder):
             ReminderRow(
                 reminder: reminder,
-                subtitle: reminderSubtitle(reminder)
+                subtitle: reminderSubtitle(reminder, isUpcoming: entry.isUpcoming)
             )
+            .opacity(entry.isUpcoming ? 0.82 : 1)
         }
     }
 
-    private func eventRow(_ event: EventModel) -> some View {
+    private func eventRow(_ event: EventModel, isUpcoming: Bool) -> some View {
         HStack(alignment: .top, spacing: 7) {
             Capsule()
                 .fill(Color(nsColor: event.calendar.color))
@@ -562,7 +635,7 @@ private struct DayTimelinePane: View {
                 Text(event.title)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
-                Text(event.isAllDay ? String(localized: "All day") : event.start.formatted(date: .omitted, time: .shortened))
+                Text(eventSubtitle(event, isUpcoming: isUpcoming))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let detail = eventDetail(event) {
@@ -577,15 +650,39 @@ private struct DayTimelinePane: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
+        .opacity(isUpcoming ? 0.82 : 1)
     }
 
-    private func reminderSubtitle(_ reminder: ReminderItem) -> String {
+    private func eventSubtitle(_ event: EventModel, isUpcoming: Bool) -> String {
+        let time = event.isAllDay
+            ? String(localized: "All day")
+            : event.start.formatted(date: .omitted, time: .shortened)
+        guard isUpcoming else { return time }
+        return "\(futureDateContext(for: event.start)) · \(time)"
+    }
+
+    private func reminderSubtitle(_ reminder: ReminderItem, isUpcoming: Bool) -> String {
         guard let dueDate = reminder.dueDate else { return reminder.calendar.title }
+        if isUpcoming {
+            let time = dueDate.formatted(date: .omitted, time: .shortened)
+            return "\(futureDateContext(for: dueDate)) · \(time) · \(reminder.calendar.title)"
+        }
         let dateStyle: Date.FormatStyle.DateStyle = Calendar.current.isDate(
             dueDate,
             inSameDayAs: selectedDate
         ) ? .omitted : .abbreviated
         return "\(dueDate.formatted(date: dateStyle, time: .shortened)) · \(reminder.calendar.title)"
+    }
+
+    private func futureDateContext(for date: Date) -> String {
+        let calendar = Calendar.current
+        let selectedDay = calendar.startOfDay(for: selectedDate)
+        let futureDay = calendar.startOfDay(for: date)
+        let dayOffset = calendar.dateComponents([.day], from: selectedDay, to: futureDay).day ?? 0
+        let relative = Self.relativeDayFormatter.localizedString(
+            from: DateComponents(day: dayOffset)
+        )
+        return "\(date.formatted(.dateTime.month(.abbreviated).day())) · \(relative)"
     }
 
     private func eventDetail(_ event: EventModel) -> String? {
