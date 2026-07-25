@@ -292,7 +292,7 @@ class CalendarManager: ObservableObject {
 
         guard let endDate = calendar.date(
             byAdding: .day,
-            value: Self.focusTimelineFetchDays,
+            value: Self.focusTimelineFetchDays + 1,
             to: startDate
         ) else { return }
 

@@ -559,7 +559,7 @@ private struct DayTimelinePane: View {
               let lookaheadEnd = Calendar.current.date(
                 byAdding: .day,
                 value: CalendarManager.focusTimelineFetchDays,
-                to: interval.start
+                to: interval.end
               )
         else { return [] }
 
@@ -576,7 +576,7 @@ private struct DayTimelinePane: View {
         return sorted(eventItems + reminderItems)
     }
 
-    private var upcomingGroups: [FutureDayTimelineGroup] {
+    private var groupedUpcomingItems: [FutureDayTimelineGroup] {
         let calendar = Calendar.current
         return upcomingItems.reduce(into: []) { groups, item in
             let day = calendar.startOfDay(for: item.date)
@@ -640,37 +640,45 @@ private struct DayTimelinePane: View {
         return .between(items.count)
     }
 
-    private func upcomingGroups(
+    private func fittedUpcomingGroups(
         fitting height: CGFloat,
         selectedItems: [DayTimelineItem],
         currentTimePlacement: CurrentTimePlacement
     ) -> [FutureDayTimelineGroup] {
-        var remainingHeight = height - selectedItems.reduce(0) { height, item in
-            height + measuredRowHeight(for: item) + Self.rowSpacing
+        var occupiedHeight = selectedItems.reduce(0) { height, item in
+            height + measuredRowHeight(for: item)
         }
+        var elementCount = selectedItems.count
+        occupiedHeight += CGFloat(max(0, elementCount - 1)) * Self.rowSpacing
+
         if currentTimePlacement.reservesVerticalSpace {
-            remainingHeight -= Self.currentTimeIndicatorHeight + Self.rowSpacing
+            occupiedHeight += Self.currentTimeIndicatorHeight
+            if elementCount > 0 {
+                occupiedHeight += Self.rowSpacing
+            }
+            elementCount += 1
         }
 
-        let boundaryCost = Self.futureBoundarySpacerHeight + Self.rowSpacing * 2
-        remainingHeight -= boundaryCost
-        guard remainingHeight > 0 else { return [] }
+        let boundaryCost = Self.futureBoundarySpacerHeight
+            + (elementCount > 0 ? Self.rowSpacing : 0)
+        occupiedHeight += boundaryCost
+        guard occupiedHeight < height else { return [] }
 
         var fittedGroups: [FutureDayTimelineGroup] = []
-        for group in upcomingGroups {
+        for group in groupedUpcomingItems {
             let groupHeaderCost = measuredHeaderHeight(for: group.day) + Self.rowSpacing
             let firstRowCost = group.items.first.map {
                 measuredRowHeight(for: $0) + Self.rowSpacing
             } ?? 0
-            guard remainingHeight >= groupHeaderCost + firstRowCost else { break }
-            remainingHeight -= groupHeaderCost
+            guard occupiedHeight + groupHeaderCost + firstRowCost <= height else { break }
+            occupiedHeight += groupHeaderCost
 
             var fittedItems: [DayTimelineItem] = []
             for item in group.items {
                 let rowCost = measuredRowHeight(for: item) + Self.rowSpacing
-                guard remainingHeight >= rowCost else { break }
+                guard occupiedHeight + rowCost <= height else { break }
                 fittedItems.append(item)
-                remainingHeight -= rowCost
+                occupiedHeight += rowCost
             }
 
             guard !fittedItems.isEmpty else { break }
@@ -746,7 +754,7 @@ private struct DayTimelinePane: View {
             DayTimelineEntry(item: $0, isUpcoming: false)
         }
         let currentTimePlacement = currentTimePlacement(in: selectedItems, now: now)
-        let futureGroups = upcomingGroups(
+        let futureGroups = fittedUpcomingGroups(
             fitting: height,
             selectedItems: selectedItems,
             currentTimePlacement: currentTimePlacement
