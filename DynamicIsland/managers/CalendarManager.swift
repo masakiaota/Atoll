@@ -65,7 +65,8 @@ class CalendarManager: ObservableObject {
     private let eventFetchLimiter = EventFetchLimiter()
     private var lastLockScreenEventsFetchDate: Date?
     private let lockScreenRefreshInterval: TimeInterval = 15
-    private var lockScreenRefreshTask: Task<Void, Never>?
+    private var periodicRefreshTask: Task<Void, Never>?
+    private let periodicRefreshInterval: TimeInterval = 60
 
     var hasCalendarAccess: Bool { isAuthorized(calendarAuthorizationStatus) }
     var hasReminderAccess: Bool { isAuthorized(reminderAuthorizationStatus) }
@@ -75,7 +76,7 @@ class CalendarManager: ObservableObject {
         calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
         reminderAuthorizationStatus = EKEventStore.authorizationStatus(for: .reminder)
         setupEventStoreChangedObserver()
-        startLockScreenRefreshLoop()
+        startPeriodicRefreshLoop()
         Task {
             await reloadCalendarAndReminderLists()
             await refreshIncompleteReminders()
@@ -87,7 +88,7 @@ class CalendarManager: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
         }
         pendingEventStoreRefreshTask?.cancel()
-        lockScreenRefreshTask?.cancel()
+        periodicRefreshTask?.cancel()
     }
 
     private func setupEventStoreChangedObserver() {
@@ -123,8 +124,13 @@ class CalendarManager: ObservableObject {
             guard let self else { return }
             if delay > 0 {
                 let nanoseconds = UInt64(delay * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: nanoseconds)
+                do {
+                    try await Task.sleep(nanoseconds: nanoseconds)
+                } catch {
+                    return
+                }
             }
+            guard !Task.isCancelled else { return }
             await self.performEventStoreRefresh()
         }
     }
@@ -363,15 +369,27 @@ class CalendarManager: ObservableObject {
         lastLockScreenEventsFetchDate = Date()
     }
 
-    private func startLockScreenRefreshLoop() {
-        lockScreenRefreshTask?.cancel()
-        lockScreenRefreshTask = Task { [weak self] in
+    private func startPeriodicRefreshLoop() {
+        periodicRefreshTask?.cancel()
+        periodicRefreshTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
-                if Task.isCancelled { break }
-                guard self.hasCalendarAccess || self.hasReminderAccess else { continue }
-                await self.updateLockScreenEvents(force: false)
+                do {
+                    try await Task.sleep(
+                        nanoseconds: UInt64(self.periodicRefreshInterval * 1_000_000_000)
+                    )
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
+                // EventKit change notifications can be coalesced or suppressed.
+                // Periodic refresh keeps the focus dashboard eventually consistent.
+                if self.hasReminderAccess {
+                    await self.refreshIncompleteReminders()
+                }
+                if self.hasCalendarAccess || self.hasReminderAccess {
+                    await self.updateLockScreenEvents(force: false)
+                }
             }
         }
     }
