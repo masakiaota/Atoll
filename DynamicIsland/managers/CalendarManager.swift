@@ -285,7 +285,7 @@ class CalendarManager: ObservableObject {
         focusTimelineStartDate = startDate
 
         let selectedEventCalendars = selectedCalendars.filter { !$0.isReminder }
-        if !eventCalendars.isEmpty && selectedEventCalendars.isEmpty {
+        guard hasCalendarAccess, !selectedEventCalendars.isEmpty else {
             focusTimelineEvents = []
             return
         }

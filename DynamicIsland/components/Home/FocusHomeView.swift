@@ -487,6 +487,27 @@ private enum CurrentTimePlacement: Equatable {
     }
 }
 
+private struct TimelineElementHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+private extension View {
+    func reportTimelineHeight(id: String) -> some View {
+        background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: TimelineElementHeightPreferenceKey.self,
+                    value: [id: geometry.size.height]
+                )
+            }
+        }
+    }
+}
+
 private struct DayTimelinePane: View {
     @Environment(\.openURL) private var openURL
     let selectedDate: Date
@@ -497,8 +518,9 @@ private struct DayTimelinePane: View {
     let openReminders: () -> Void
 
     @ObservedObject private var calendarManager = CalendarManager.shared
+    @State private var measuredElementHeights: [String: CGFloat] = [:]
 
-    private static let estimatedRowHeight: CGFloat = 44
+    private static let unmeasuredRowHeight: CGFloat = 56
     private static let rowSpacing: CGFloat = 2
     private static let currentTimeIndicatorHeight: CGFloat = 14
     private static let futureBoundarySpacerHeight: CGFloat = 18
@@ -620,11 +642,12 @@ private struct DayTimelinePane: View {
 
     private func upcomingGroups(
         fitting height: CGFloat,
-        selectedItemCount: Int,
+        selectedItems: [DayTimelineItem],
         currentTimePlacement: CurrentTimePlacement
     ) -> [FutureDayTimelineGroup] {
-        let rowExtent = Self.estimatedRowHeight + Self.rowSpacing
-        var remainingHeight = height - CGFloat(selectedItemCount) * rowExtent
+        var remainingHeight = height - selectedItems.reduce(0) { height, item in
+            height + measuredRowHeight(for: item) + Self.rowSpacing
+        }
         if currentTimePlacement.reservesVerticalSpace {
             remainingHeight -= Self.currentTimeIndicatorHeight + Self.rowSpacing
         }
@@ -635,15 +658,19 @@ private struct DayTimelinePane: View {
 
         var fittedGroups: [FutureDayTimelineGroup] = []
         for group in upcomingGroups {
-            let groupHeaderCost = Self.futureGroupHeaderHeight + Self.rowSpacing
-            guard remainingHeight >= groupHeaderCost + rowExtent else { break }
+            let groupHeaderCost = measuredHeaderHeight(for: group.day) + Self.rowSpacing
+            let firstRowCost = group.items.first.map {
+                measuredRowHeight(for: $0) + Self.rowSpacing
+            } ?? 0
+            guard remainingHeight >= groupHeaderCost + firstRowCost else { break }
             remainingHeight -= groupHeaderCost
 
             var fittedItems: [DayTimelineItem] = []
             for item in group.items {
-                guard remainingHeight >= rowExtent else { break }
+                let rowCost = measuredRowHeight(for: item) + Self.rowSpacing
+                guard remainingHeight >= rowCost else { break }
                 fittedItems.append(item)
-                remainingHeight -= rowExtent
+                remainingHeight -= rowCost
             }
 
             guard !fittedItems.isEmpty else { break }
@@ -651,6 +678,22 @@ private struct DayTimelinePane: View {
             if fittedItems.count < group.items.count { break }
         }
         return fittedGroups
+    }
+
+    private func rowHeightID(for item: DayTimelineItem) -> String {
+        "timeline-row:\(item.id)"
+    }
+
+    private func headerHeightID(for day: Date) -> String {
+        "timeline-header:\(day.timeIntervalSinceReferenceDate)"
+    }
+
+    private func measuredRowHeight(for item: DayTimelineItem) -> CGFloat {
+        measuredElementHeights[rowHeightID(for: item)] ?? Self.unmeasuredRowHeight
+    }
+
+    private func measuredHeaderHeight(for day: Date) -> CGFloat {
+        measuredElementHeights[headerHeightID(for: day)] ?? Self.futureGroupHeaderHeight
     }
 
     private func shouldShowReminder(_ reminder: ReminderItem) -> Bool {
@@ -705,7 +748,7 @@ private struct DayTimelinePane: View {
         let currentTimePlacement = currentTimePlacement(in: selectedItems, now: now)
         let futureGroups = upcomingGroups(
             fitting: height,
-            selectedItemCount: selectedItems.count,
+            selectedItems: selectedItems,
             currentTimePlacement: currentTimePlacement
         )
         let hasScheduledContent = !selectedEntries.isEmpty || !futureGroups.isEmpty
@@ -751,6 +794,15 @@ private struct DayTimelinePane: View {
                         }
                     }
                 }
+                .onPreferenceChange(TimelineElementHeightPreferenceKey.self) { heights in
+                    var updatedHeights = measuredElementHeights
+                    for (id, height) in heights where height > 0 {
+                        updatedHeights[id] = (height * 2).rounded() / 2
+                    }
+                    if updatedHeights != measuredElementHeights {
+                        measuredElementHeights = updatedHeights
+                    }
+                }
             }
             .scrollIndicators(.never)
         }
@@ -785,12 +837,14 @@ private struct DayTimelinePane: View {
             .buttonStyle(.plain)
             .help("Open in Calendar")
             .accessibilityLabel("Open \(event.title) in Calendar")
+            .reportTimelineHeight(id: rowHeightID(for: entry.item))
         case .reminder(let reminder):
             ReminderRow(
                 reminder: reminder,
                 subtitle: reminderSubtitle(reminder, isUpcoming: entry.isUpcoming)
             )
             .opacity(entry.isUpcoming ? 0.82 : 1)
+            .reportTimelineHeight(id: rowHeightID(for: entry.item))
         }
     }
 
@@ -847,6 +901,7 @@ private struct DayTimelinePane: View {
             .frame(maxWidth: .infinity, minHeight: Self.futureGroupHeaderHeight, alignment: .leading)
             .padding(.horizontal, 9)
             .accessibilityAddTraits(.isHeader)
+            .reportTimelineHeight(id: headerHeightID(for: day))
     }
 
     private func futureGroupTitle(for day: Date) -> String {
