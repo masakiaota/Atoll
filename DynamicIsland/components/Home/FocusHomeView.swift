@@ -460,14 +460,23 @@ private struct DayTimelinePane: View {
     private var timelineItems: [DayTimelineItem] {
         let eventItems = events.map(DayTimelineItem.event)
         let reminderItems = calendarManager.incompleteReminders.compactMap { reminder -> DayTimelineItem? in
-            guard let dueDate = reminder.dueDate,
-                  Calendar.current.isDate(dueDate, inSameDayAs: selectedDate) else { return nil }
+            guard shouldShowReminder(reminder) else { return nil }
             return .reminder(reminder)
         }
         return (eventItems + reminderItems).sorted { lhs, rhs in
             if lhs.date == rhs.date { return lhs.sortPriority < rhs.sortPriority }
             return lhs.date < rhs.date
         }
+    }
+
+    private func shouldShowReminder(_ reminder: ReminderItem) -> Bool {
+        guard let dueDate = reminder.dueDate else { return false }
+        let calendar = Calendar.current
+        if calendar.isDate(dueDate, inSameDayAs: selectedDate) {
+            return true
+        }
+        return calendar.isDateInToday(selectedDate)
+            && dueDate < calendar.startOfDay(for: selectedDate)
     }
 
     var body: some View {
@@ -572,7 +581,11 @@ private struct DayTimelinePane: View {
 
     private func reminderSubtitle(_ reminder: ReminderItem) -> String {
         guard let dueDate = reminder.dueDate else { return reminder.calendar.title }
-        return "\(dueDate.formatted(date: .omitted, time: .shortened)) · \(reminder.calendar.title)"
+        let dateStyle: Date.FormatStyle.DateStyle = Calendar.current.isDate(
+            dueDate,
+            inSameDayAs: selectedDate
+        ) ? .omitted : .abbreviated
+        return "\(dueDate.formatted(date: dateStyle, time: .shortened)) · \(reminder.calendar.title)"
     }
 
     private func eventDetail(_ event: EventModel) -> String? {
