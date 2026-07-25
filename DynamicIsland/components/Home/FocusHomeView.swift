@@ -448,6 +448,18 @@ private enum DayTimelineItem: Identifiable {
         case .reminder: 2
         }
     }
+
+    var timedEvent: EventModel? {
+        guard case .event(let event) = self, !event.isAllDay else { return nil }
+        return event
+    }
+
+    var timePositionDate: Date? {
+        switch self {
+        case .event(let event): event.isAllDay ? nil : event.start
+        case .reminder(let reminder): reminder.dueDate
+        }
+    }
 }
 
 private struct DayTimelineEntry: Identifiable {
@@ -455,6 +467,24 @@ private struct DayTimelineEntry: Identifiable {
     let isUpcoming: Bool
 
     var id: String { item.id }
+}
+
+private struct FutureDayTimelineGroup: Identifiable {
+    let day: Date
+    let items: [DayTimelineItem]
+
+    var id: Date { day }
+}
+
+private enum CurrentTimePlacement: Equatable {
+    case hidden
+    case between(Int)
+    case inside(itemID: String, progress: CGFloat)
+
+    var reservesVerticalSpace: Bool {
+        if case .between = self { return true }
+        return false
+    }
 }
 
 private struct DayTimelinePane: View {
@@ -470,9 +500,18 @@ private struct DayTimelinePane: View {
 
     private static let estimatedRowHeight: CGFloat = 44
     private static let rowSpacing: CGFloat = 2
+    private static let currentTimeIndicatorHeight: CGFloat = 14
+    private static let futureBoundarySpacerHeight: CGFloat = 18
+    private static let futureGroupHeaderHeight: CGFloat = 18
     private static let relativeDayFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+    private static let numericRelativeDayFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .numeric
         formatter.unitsStyle = .full
         return formatter
     }()
@@ -515,6 +554,21 @@ private struct DayTimelinePane: View {
         return sorted(eventItems + reminderItems)
     }
 
+    private var upcomingGroups: [FutureDayTimelineGroup] {
+        let calendar = Calendar.current
+        return upcomingItems.reduce(into: []) { groups, item in
+            let day = calendar.startOfDay(for: item.date)
+            if let last = groups.last, calendar.isDate(last.day, inSameDayAs: day) {
+                groups[groups.count - 1] = FutureDayTimelineGroup(
+                    day: last.day,
+                    items: last.items + [item]
+                )
+            } else {
+                groups.append(FutureDayTimelineGroup(day: day, items: [item]))
+            }
+        }
+    }
+
     private func sorted(_ items: [DayTimelineItem]) -> [DayTimelineItem] {
         items.sorted { lhs, rhs in
             if lhs.date == rhs.date { return lhs.sortPriority < rhs.sortPriority }
@@ -522,17 +576,81 @@ private struct DayTimelinePane: View {
         }
     }
 
-    private func timelineEntries(fitting height: CGFloat) -> [DayTimelineEntry] {
+    private func currentTimePlacement(
+        in items: [DayTimelineItem],
+        now: Date
+    ) -> CurrentTimePlacement {
+        guard Calendar.current.isDate(selectedDate, inSameDayAs: now) else {
+            return .hidden
+        }
+
+        let activeEvents = items.compactMap { item -> EventModel? in
+            guard let event = item.timedEvent,
+                  event.start <= now,
+                  now < event.end
+            else { return nil }
+            return event
+        }
+
+        if activeEvents.count == 1, let event = activeEvents.first {
+            let duration = event.end.timeIntervalSince(event.start)
+            let progress = duration > 0
+                ? CGFloat(now.timeIntervalSince(event.start) / duration)
+                : 0
+            return .inside(
+                itemID: DayTimelineItem.event(event).id,
+                progress: min(max(progress, 0), 1)
+            )
+        }
+
+        if activeEvents.count > 1 {
+            let activeIDs = Set(activeEvents.map { DayTimelineItem.event($0).id })
+            let lastActiveIndex = items.lastIndex { activeIDs.contains($0.id) } ?? -1
+            return .between(lastActiveIndex + 1)
+        }
+
+        if let nextIndex = items.firstIndex(where: {
+            guard let positionDate = $0.timePositionDate else { return false }
+            return positionDate > now
+        }) {
+            return .between(nextIndex)
+        }
+        return .between(items.count)
+    }
+
+    private func upcomingGroups(
+        fitting height: CGFloat,
+        selectedItemCount: Int,
+        currentTimePlacement: CurrentTimePlacement
+    ) -> [FutureDayTimelineGroup] {
         let rowExtent = Self.estimatedRowHeight + Self.rowSpacing
-        let visibleRowCapacity = max(Int((height + Self.rowSpacing) / rowExtent), 1)
-        let availableUpcomingRows = max(visibleRowCapacity - selectedDayItems.count, 0)
-        let selectedEntries = selectedDayItems.map {
-            DayTimelineEntry(item: $0, isUpcoming: false)
+        var remainingHeight = height - CGFloat(selectedItemCount) * rowExtent
+        if currentTimePlacement.reservesVerticalSpace {
+            remainingHeight -= Self.currentTimeIndicatorHeight + Self.rowSpacing
         }
-        let upcomingEntries = upcomingItems.prefix(availableUpcomingRows).map {
-            DayTimelineEntry(item: $0, isUpcoming: true)
+
+        let boundaryCost = Self.futureBoundarySpacerHeight + Self.rowSpacing * 2
+        remainingHeight -= boundaryCost
+        guard remainingHeight > 0 else { return [] }
+
+        var fittedGroups: [FutureDayTimelineGroup] = []
+        for group in upcomingGroups {
+            let groupHeaderCost = Self.futureGroupHeaderHeight + Self.rowSpacing
+            guard remainingHeight >= groupHeaderCost + rowExtent else { break }
+            remainingHeight -= groupHeaderCost
+
+            var fittedItems: [DayTimelineItem] = []
+            for item in group.items {
+                guard remainingHeight >= rowExtent else { break }
+                fittedItems.append(item)
+                remainingHeight -= rowExtent
+            }
+
+            guard !fittedItems.isEmpty else { break }
+            fittedGroups.append(FutureDayTimelineGroup(day: group.day, items: fittedItems))
+            if fittedItems.count < group.items.count { break }
         }
-        return selectedEntries + upcomingEntries
+        return fittedGroups
     }
 
     private func shouldShowReminder(_ reminder: ReminderItem) -> Bool {
@@ -572,24 +690,65 @@ private struct DayTimelinePane: View {
 
     private var timeline: some View {
         GeometryReader { geometry in
-            timelineContent(fitting: geometry.size.height)
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                timelineContent(fitting: geometry.size.height, now: context.date)
+            }
         }
     }
 
     @ViewBuilder
-    private func timelineContent(fitting height: CGFloat) -> some View {
-        let entries = timelineEntries(fitting: height)
-        if entries.isEmpty && isLoading {
+    private func timelineContent(fitting height: CGFloat, now: Date) -> some View {
+        let selectedItems = selectedDayItems
+        let selectedEntries = selectedItems.map {
+            DayTimelineEntry(item: $0, isUpcoming: false)
+        }
+        let currentTimePlacement = currentTimePlacement(in: selectedItems, now: now)
+        let futureGroups = upcomingGroups(
+            fitting: height,
+            selectedItemCount: selectedItems.count,
+            currentTimePlacement: currentTimePlacement
+        )
+        let hasScheduledContent = !selectedEntries.isEmpty || !futureGroups.isEmpty
+
+        if !hasScheduledContent && isLoading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if entries.isEmpty && !hasCalendarAccess {
+        } else if !hasScheduledContent && !hasCalendarAccess {
             emptyMessage("Calendar access is not available.")
-        } else if entries.isEmpty {
+        } else if !hasScheduledContent && currentTimePlacement == .hidden {
             emptyMessage("No events or reminders")
         } else {
             ScrollView {
                 LazyVStack(spacing: Self.rowSpacing) {
-                    ForEach(entries) { entry in
-                        timelineRow(entry)
+                    ForEach(Array(selectedEntries.enumerated()), id: \.element.id) { index, entry in
+                        if currentTimePlacement == .between(index) {
+                            currentTimeIndicator(now: now)
+                        }
+                        timelineRow(
+                            entry,
+                            currentTimeProgress: currentTimeProgress(
+                                for: entry,
+                                placement: currentTimePlacement
+                            ),
+                            now: now
+                        )
+                    }
+                    if currentTimePlacement == .between(selectedEntries.count) {
+                        currentTimeIndicator(now: now)
+                    }
+
+                    if !futureGroups.isEmpty {
+                        Color.clear
+                            .frame(height: Self.futureBoundarySpacerHeight)
+                            .accessibilityHidden(true)
+                        ForEach(futureGroups) { group in
+                            futureGroupHeader(for: group.day)
+                            ForEach(group.items) { item in
+                                timelineRow(
+                                    DayTimelineEntry(item: item, isUpcoming: true),
+                                    now: now
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -606,13 +765,22 @@ private struct DayTimelinePane: View {
     }
 
     @ViewBuilder
-    private func timelineRow(_ entry: DayTimelineEntry) -> some View {
+    private func timelineRow(
+        _ entry: DayTimelineEntry,
+        currentTimeProgress: CGFloat? = nil,
+        now: Date
+    ) -> some View {
         switch entry.item {
         case .event(let event):
             Button {
                 if let url = event.calendarAppURL() { openURL(url) }
             } label: {
                 eventRow(event, isUpcoming: entry.isUpcoming)
+                    .overlay {
+                        if let currentTimeProgress {
+                            currentTimeOverlay(now: now, progress: currentTimeProgress)
+                        }
+                    }
             }
             .buttonStyle(.plain)
             .help("Open in Calendar")
@@ -626,6 +794,66 @@ private struct DayTimelinePane: View {
         }
     }
 
+    private func currentTimeProgress(
+        for entry: DayTimelineEntry,
+        placement: CurrentTimePlacement
+    ) -> CGFloat? {
+        guard case .inside(let itemID, let progress) = placement,
+              entry.id == itemID
+        else { return nil }
+        return progress
+    }
+
+    private func currentTimeOverlay(now: Date, progress: CGFloat) -> some View {
+        GeometryReader { geometry in
+            let centeredOffset = geometry.size.height * progress
+                - Self.currentTimeIndicatorHeight / 2
+            let offset = min(
+                max(centeredOffset, 0),
+                max(geometry.size.height - Self.currentTimeIndicatorHeight, 0)
+            )
+            currentTimeIndicator(now: now)
+                .offset(y: offset)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func currentTimeIndicator(now: Date) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 5, height: 5)
+            Rectangle()
+                .fill(Color.red)
+                .frame(height: 1)
+            Text(now.formatted(date: .omitted, time: .shortened))
+                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.red)
+                .padding(.horizontal, 3)
+                .background(Color.black.opacity(0.88), in: Capsule())
+        }
+        .frame(height: Self.currentTimeIndicatorHeight)
+        .padding(.horizontal, 9)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Current time \(now.formatted(date: .omitted, time: .shortened))")
+        .accessibilityIdentifier("focus-current-time-indicator")
+    }
+
+    private func futureGroupHeader(for day: Date) -> some View {
+        Text(futureGroupTitle(for: day))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: Self.futureGroupHeaderHeight, alignment: .leading)
+            .padding(.horizontal, 9)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func futureGroupTitle(for day: Date) -> String {
+        "\(day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))"
+            + " · \(relativeDayDescription(for: day))"
+    }
+
     private func eventRow(_ event: EventModel, isUpcoming: Bool) -> some View {
         HStack(alignment: .top, spacing: 7) {
             Capsule()
@@ -635,7 +863,7 @@ private struct DayTimelinePane: View {
                 Text(event.title)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
-                Text(eventSubtitle(event, isUpcoming: isUpcoming))
+                Text(eventSubtitle(event))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let detail = eventDetail(event) {
@@ -653,19 +881,18 @@ private struct DayTimelinePane: View {
         .opacity(isUpcoming ? 0.82 : 1)
     }
 
-    private func eventSubtitle(_ event: EventModel, isUpcoming: Bool) -> String {
+    private func eventSubtitle(_ event: EventModel) -> String {
         let time = event.isAllDay
             ? String(localized: "All day")
             : event.start.formatted(date: .omitted, time: .shortened)
-        guard isUpcoming else { return time }
-        return "\(futureDateContext(for: event.start)) · \(time)"
+        return time
     }
 
     private func reminderSubtitle(_ reminder: ReminderItem, isUpcoming: Bool) -> String {
         guard let dueDate = reminder.dueDate else { return reminder.calendar.title }
         if isUpcoming {
             let time = dueDate.formatted(date: .omitted, time: .shortened)
-            return "\(futureDateContext(for: dueDate)) · \(time) · \(reminder.calendar.title)"
+            return "\(time) · \(reminder.calendar.title)"
         }
         let dateStyle: Date.FormatStyle.DateStyle = Calendar.current.isDate(
             dueDate,
@@ -674,15 +901,18 @@ private struct DayTimelinePane: View {
         return "\(dueDate.formatted(date: dateStyle, time: .shortened)) · \(reminder.calendar.title)"
     }
 
-    private func futureDateContext(for date: Date) -> String {
+    private func relativeDayDescription(for date: Date) -> String {
         let calendar = Calendar.current
         let selectedDay = calendar.startOfDay(for: selectedDate)
         let futureDay = calendar.startOfDay(for: date)
         let dayOffset = calendar.dateComponents([.day], from: selectedDay, to: futureDay).day ?? 0
-        let relative = Self.relativeDayFormatter.localizedString(
+        let formatter = calendar.isDateInToday(selectedDate)
+            ? Self.relativeDayFormatter
+            : Self.numericRelativeDayFormatter
+        let relative = formatter.localizedString(
             from: DateComponents(day: dayOffset)
         )
-        return "\(date.formatted(.dateTime.month(.abbreviated).day())) · \(relative)"
+        return relative
     }
 
     private func eventDetail(_ event: EventModel) -> String? {
