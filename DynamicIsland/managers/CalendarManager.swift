@@ -46,6 +46,7 @@ class CalendarManager: ObservableObject {
     @Published var calendarAuthorizationStatus: EKAuthorizationStatus = .notDetermined
     @Published var reminderAuthorizationStatus: EKAuthorizationStatus = .notDetermined
     @Published var lockScreenEvents: [EventModel] = []
+    @Published private(set) var focusTimelineEvents: [EventModel] = []
     @Published private(set) var incompleteReminders: [ReminderItem] = []
     @Published private(set) var reminderLoadState: ReminderLoadState = .idle
     @Published private(set) var reminderMutationError: String?
@@ -66,6 +67,9 @@ class CalendarManager: ObservableObject {
     private var lastLockScreenEventsFetchDate: Date?
     private let lockScreenRefreshInterval: TimeInterval = 15
     private var lockScreenRefreshTask: Task<Void, Never>?
+    private var focusTimelineStartDate: Date?
+
+    static let focusTimelineFetchDays = 28
 
     var hasCalendarAccess: Bool { isAuthorized(calendarAuthorizationStatus) }
     var hasReminderAccess: Bool { isAuthorized(reminderAuthorizationStatus) }
@@ -134,6 +138,7 @@ class CalendarManager: ObservableObject {
         pendingEventStoreRefreshTask = nil
         await reloadCalendarAndReminderLists()
         await maybeRefreshEventsAfterReload()
+        await refreshFocusTimelineEventsIfNeeded()
         await refreshIncompleteReminders()
         await updateLockScreenEvents(force: true)
         nextAllowedEventStoreRefresh = Date().addingTimeInterval(eventStoreChangeThrottle)
@@ -259,6 +264,7 @@ class CalendarManager: ObservableObject {
         Defaults[.calendarSelectionState] = selectionState
         updateSelectedCalendars()
         await updateEvents(force: true)
+        await refreshFocusTimelineEventsIfNeeded()
         await refreshIncompleteReminders()
         await updateLockScreenEvents(force: true)
     }
@@ -271,6 +277,42 @@ class CalendarManager: ObservableObject {
         currentWeekStartDate = Calendar.current.startOfDay(for: date)
         await updateEvents(force: true)
         await updateLockScreenEvents(force: true)
+    }
+
+    func updateFocusTimelineEvents(for date: Date) async {
+        let calendar = Calendar.current
+        let startDate = calendar.startOfDay(for: date)
+        focusTimelineStartDate = startDate
+
+        let selectedEventCalendars = selectedCalendars.filter { !$0.isReminder }
+        guard hasCalendarAccess, !selectedEventCalendars.isEmpty else {
+            focusTimelineEvents = []
+            return
+        }
+
+        guard let endDate = calendar.date(
+            byAdding: .day,
+            value: Self.focusTimelineFetchDays + 1,
+            to: startDate
+        ) else { return }
+
+        let calendarIDs = selectedEventCalendars.map(\.id)
+        let service = calendarService
+        let fetched = await eventFetchLimiter.run {
+            await service.events(
+                from: startDate,
+                to: endDate,
+                calendars: calendarIDs
+            )
+        }
+
+        guard focusTimelineStartDate == startDate else { return }
+        focusTimelineEvents = fetched.filter { !$0.type.isReminder }
+    }
+
+    private func refreshFocusTimelineEventsIfNeeded() async {
+        guard let focusTimelineStartDate else { return }
+        await updateFocusTimelineEvents(for: focusTimelineStartDate)
     }
 
     func updateLockScreenEvents(force: Bool = false) async {
@@ -464,6 +506,7 @@ class CalendarManager: ObservableObject {
         Defaults[.calendarSelectionState] = selectionState
         updateSelectedCalendars()
         await updateEvents(force: true)
+        await refreshFocusTimelineEventsIfNeeded()
         await refreshIncompleteReminders()
         await updateLockScreenEvents(force: true)
     }

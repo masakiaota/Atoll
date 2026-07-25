@@ -569,6 +569,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrame(targetFrame, display: true)
     }
 
+    private func restoreFocusTaskWindowsAfterTransition() {
+        guard FocusTaskManager.shared.hasActiveTask else { return }
+
+        let focusWindows: [NSWindow]
+        if Defaults[.showOnAllDisplays] {
+            focusWindows = Array(windows.values)
+        } else if let window {
+            focusWindows = [window]
+        } else {
+            focusWindows = []
+        }
+
+        // A transient panel is hidden while Mission Control is visible, which is
+        // intentional. Reassert its order only after an app or Space transition
+        // completes so Focus returns immediately instead of waiting for AppKit.
+        DispatchQueue.main.async {
+            guard FocusTaskManager.shared.hasActiveTask else { return }
+            focusWindows.forEach { $0.orderFrontRegardless() }
+        }
+    }
+
     private func shouldAnimateResize(for newSize: CGSize) -> Bool {
         if Defaults[.enableMinimalisticUI] && !ReminderLiveActivityManager.shared.activeWindowReminders.isEmpty {
             return false
@@ -680,6 +701,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .removeDuplicates()
             .sink { [weak self] _ in
                 self?.updateWindowSizeIfNeeded()
+            }
+            .store(in: &cancellables)
+
+        Publishers.Merge(
+            NSWorkspace.shared.notificationCenter.publisher(
+                for: NSWorkspace.activeSpaceDidChangeNotification
+            ),
+            NSWorkspace.shared.notificationCenter.publisher(
+                for: NSWorkspace.didActivateApplicationNotification
+            )
+        )
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.restoreFocusTaskWindowsAfterTransition()
             }
             .store(in: &cancellables)
         
