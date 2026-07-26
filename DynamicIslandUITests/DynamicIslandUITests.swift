@@ -29,4 +29,27 @@ final class DynamicIslandUITests: XCTestCase {
         let notch = app.descendants(matching: .any)["AtollNotch"]
         XCTAssertTrue(notch.waitForExistence(timeout: 15.0), "The Atoll notch should be visible.")
     }
+
+    // Repeated display-mode reconciliation must reuse the single managed panel.
+    func testRepeatedDisplayModeNotificationsDoNotDuplicateNotch() throws {
+        app.terminate()
+        app.launchArguments = [
+            "--uitesting",
+            "--uitesting-force-single-display",
+            "--uitesting-repeat-display-mode-notifications",
+        ]
+        app.launch()
+
+        let notches = app.descendants(matching: .any).matching(identifier: "AtollNotch")
+        XCTAssertTrue(
+            notches.firstMatch.waitForExistence(timeout: 15.0),
+            "The initial Atoll notch should be visible."
+        )
+
+        XCTAssertEqual(
+            notches.count,
+            1,
+            "Repeated display reconciliation should leave exactly one notch."
+        )
+    }
 }
