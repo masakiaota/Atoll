@@ -351,6 +351,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.close()
     }
 
+    private func reconcileWindowsForDisplayMode() {
+        if Defaults[.showOnAllDisplays] {
+            closeSingleDisplayWindow()
+        } else {
+            closeAllDisplayWindows()
+        }
+        adjustWindowPosition(changeAlpha: true)
+    }
+
     /// Rebuilds the notch's CGSSpace membership from the current hide option and the
     /// live windows. The space pins the notch above every space (fullscreen included)
     /// and is used **only** for "Never hide"; the hide options keep the set empty so
@@ -889,14 +898,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: Notification.Name.showOnAllDisplaysChanged, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-
-            if Defaults[.showOnAllDisplays] {
-                self.closeSingleDisplayWindow()
-            } else {
-                self.closeAllDisplayWindows()
-            }
-            self.adjustWindowPosition(changeAlpha: true)
+            self?.reconcileWindowsForDisplayMode()
         }
 
         DistributedNotificationCenter.default().addObserver(
@@ -960,12 +962,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         adjustWindowPosition(changeAlpha: true)
 
-        if AppRuntimeEnvironment.repeatsDisplayModeNotificationForUITesting {
+        if AppRuntimeEnvironment.repeatsDisplayModeReconciliationForUITesting {
             for _ in 0..<10 {
-                NotificationCenter.default.post(
-                    name: Notification.Name.showOnAllDisplaysChanged,
-                    object: nil
-                )
+                reconcileWindowsForDisplayMode()
             }
 
             #if DEBUG

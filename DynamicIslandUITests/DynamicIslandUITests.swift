@@ -31,12 +31,12 @@ final class DynamicIslandUITests: XCTestCase {
     }
 
     // Repeated display-mode reconciliation must reuse the single managed panel.
-    func testRepeatedDisplayModeNotificationsDoNotDuplicateNotch() throws {
+    func testRepeatedDisplayModeReconciliationDoesNotDuplicateNotch() throws {
         app.terminate()
         app.launchArguments = [
             "--uitesting",
             "--uitesting-force-single-display",
-            "--uitesting-repeat-display-mode-notifications",
+            "--uitesting-repeat-display-mode-reconciliation",
         ]
         app.launch()
 

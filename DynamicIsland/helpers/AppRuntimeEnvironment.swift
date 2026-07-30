@@ -48,10 +48,10 @@ enum AppRuntimeEnvironment {
     }()
 
     /// Exercises reconciliation repeatedly after the initial panel is visible.
-    static let repeatsDisplayModeNotificationForUITesting: Bool = {
+    static let repeatsDisplayModeReconciliationForUITesting: Bool = {
         #if DEBUG
         return isUITesting
-            && CommandLine.arguments.contains("--uitesting-repeat-display-mode-notifications")
+            && CommandLine.arguments.contains("--uitesting-repeat-display-mode-reconciliation")
         #else
         return false
         #endif
