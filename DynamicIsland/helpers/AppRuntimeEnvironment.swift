@@ -36,4 +36,24 @@ enum AppRuntimeEnvironment {
         return false
         #endif
     }()
+
+    /// Forces the single-display window path for display reconciliation UI tests.
+    static let forcesSingleDisplayForUITesting: Bool = {
+        #if DEBUG
+        return isUITesting
+            && CommandLine.arguments.contains("--uitesting-force-single-display")
+        #else
+        return false
+        #endif
+    }()
+
+    /// Exercises reconciliation repeatedly after the initial panel is visible.
+    static let repeatsDisplayModeReconciliationForUITesting: Bool = {
+        #if DEBUG
+        return isUITesting
+            && CommandLine.arguments.contains("--uitesting-repeat-display-mode-reconciliation")
+        #else
+        return false
+        #endif
+    }()
 }

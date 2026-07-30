@@ -310,25 +310,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    private func cleanupWindows(shouldInvert: Bool = false) {
-        if shouldInvert ? !Defaults[.showOnAllDisplays] : Defaults[.showOnAllDisplays] {
-            for (screen, window) in windows {
-                // Tear down the hosted ContentView before dropping the window
-                // (`.onDisappear` is unreliable for borderless panels).
-                viewModels[screen]?.onViewTeardown?()
-                viewModels[screen]?.onViewTeardown = nil
-                NotchSpaceManager.shared.notchSpace.windows.remove(window)
-                window.close()
-            }
-            windows.removeAll()
-            viewModels.removeAll()
-        } else if let window = window {
-            vm.onViewTeardown?()
-            vm.onViewTeardown = nil
-            NotchSpaceManager.shared.notchSpace.windows.remove(window)
-            window.close()
-            self.window = nil
+    private func closeSingleDisplayWindow() {
+        guard let window else { return }
+
+        // Relinquish ownership before teardown so a re-entrant reconciliation
+        // cannot mistake the closing panel for the current one.
+        self.window = nil
+        vm.onViewTeardown?()
+        vm.onViewTeardown = nil
+        closeDynamicIslandWindow(window)
+    }
+
+    private func closeAllDisplayWindows() {
+        let windowsToClose = windows
+        let viewModelsToDestroy = viewModels
+
+        // Clear the registries first for the same re-entrancy reason as the
+        // single-display path.
+        windows.removeAll()
+        viewModels.removeAll()
+
+        for (screen, window) in windowsToClose {
+            let viewModel = viewModelsToDestroy[screen]
+            viewModel?.onViewTeardown?()
+            viewModel?.onViewTeardown = nil
+            closeDynamicIslandWindow(window)
+            viewModel?.destroy()
         }
+    }
+
+    private func closeDynamicIslandWindow(_ window: NSWindow) {
+        NotchSpaceManager.shared.notchSpace.windows.remove(window)
+        ScreenCaptureVisibilityManager.shared.unregister(window)
+
+        // `orderOut` makes visibility removal explicit before breaking the
+        // SwiftUI hosting graph. This also prevents a panel from surviving a
+        // display reconfiguration while a close is in flight.
+        window.orderOut(nil)
+        window.contentView = nil
+        window.close()
+    }
+
+    private func reconcileWindowsForDisplayMode() {
+        if Defaults[.showOnAllDisplays] {
+            closeSingleDisplayWindow()
+        } else {
+            closeAllDisplayWindows()
+        }
+        adjustWindowPosition(changeAlpha: true)
     }
 
     /// Rebuilds the notch's CGSSpace membership from the current hide option and the
@@ -378,13 +407,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 //.moveToSky()
         )
         
-        window.orderFrontRegardless()
-        // Pin above every space (fullscreen included) only for "Never hide"; the
-        // hide options leave the window on the collectionBehavior path so
-        // FullscreenMediaDetector can hide it. See NotchSpaceManager.
-        if Defaults[.hideNotchOption] == .never {
-            NotchSpaceManager.shared.notchSpace.windows.insert(window)
-        }
         //SkyLightOperator.shared.delegateWindow(window)
         return window
     }
@@ -598,6 +620,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if AppRuntimeEnvironment.forcesSingleDisplayForUITesting {
+            Defaults[.showOnAllDisplays] = false
+        }
+
         let userInfo: [String: Any] = [
             AtollDistributedNotifications.UserInfoKey.sourcePID: NSNumber(value: ProcessInfo.processInfo.processIdentifier)
         ]
@@ -870,20 +896,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         NotificationCenter.default.addObserver(
-            forName: Notification.Name.showOnAllDisplaysChanged, object: nil, queue: nil
+            forName: Notification.Name.showOnAllDisplaysChanged, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-            self.cleanupWindows(shouldInvert: true)
-
-            if !Defaults[.showOnAllDisplays] {
-                let viewModel = self.vm
-                let window = self.createDynamicIslandWindow(
-                    for: NSScreen.main ?? NSScreen.screens.first!, with: viewModel)
-                self.window = window
-                self.adjustWindowPosition(changeAlpha: true)
-            } else {
-                self.adjustWindowPosition()
-            }
+            self?.reconcileWindowsForDisplayMode()
         }
 
         DistributedNotificationCenter.default().addObserver(
@@ -945,14 +960,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerOptionalShortcutHandlers()
         updateFeatureShortcutAvailability()
 
-        if !Defaults[.showOnAllDisplays] {
-            let viewModel = self.vm
-            let window = createDynamicIslandWindow(
-                for: NSScreen.main ?? NSScreen.screens.first!, with: viewModel)
-            self.window = window
-            adjustWindowPosition(changeAlpha: true)
-        } else {
-            adjustWindowPosition(changeAlpha: true)
+        adjustWindowPosition(changeAlpha: true)
+
+        if AppRuntimeEnvironment.repeatsDisplayModeReconciliationForUITesting {
+            for _ in 0..<10 {
+                reconcileWindowsForDisplayMode()
+            }
+
+            #if DEBUG
+            let notchWindows = NSApplication.shared.windows.compactMap {
+                $0 as? DynamicIslandWindow
+            }
+            assert(notchWindows.count == 1, "Display reconciliation leaked a notch window.")
+            assert(
+                notchWindows.filter(\.isVisible).count == 1,
+                "Display reconciliation left a hidden or duplicated notch window."
+            )
+            #endif
         }
         
         // Skip onboarding window and welcome sound under UI testing.
@@ -1390,37 +1414,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         if screensChanged {
             DispatchQueue.main.async { [weak self] in
-                self?.cleanupWindows()
-                self?.adjustWindowPosition()
+                self?.adjustWindowPosition(changeAlpha: true)
             }
         }
     }
-    
+
     @objc func adjustWindowPosition(changeAlpha: Bool = false) {
         if Defaults[.showOnAllDisplays] {
             let currentScreens = Set(NSScreen.screens)
             
-            for screen in windows.keys where !currentScreens.contains(screen) {
+            let removedScreens = windows.keys.filter { !currentScreens.contains($0) }
+            for screen in removedScreens {
                 if let window = windows[screen] {
-                    viewModels[screen]?.onViewTeardown?()
-                    viewModels[screen]?.onViewTeardown = nil
-                    window.close()
+                    let viewModel = viewModels[screen]
                     windows.removeValue(forKey: screen)
                     viewModels.removeValue(forKey: screen)
+                    viewModel?.onViewTeardown?()
+                    viewModel?.onViewTeardown = nil
+                    closeDynamicIslandWindow(window)
+                    viewModel?.destroy()
                 }
             }
             
             for screen in currentScreens {
+                var createdWindow: NSWindow?
                 if windows[screen] == nil {
                     let viewModel = DynamicIslandViewModel(screen: screen.localizedName)
                     let window = createDynamicIslandWindow(for: screen, with: viewModel)
                     
                     windows[screen] = window
                     viewModels[screen] = viewModel
+                    createdWindow = window
                 }
                 
                 if let window = windows[screen], let viewModel = viewModels[screen] {
                     positionWindow(window, on: screen, changeAlpha: changeAlpha)
+
+                    if let createdWindow {
+                        if Defaults[.hideNotchOption] == .never {
+                            NotchSpaceManager.shared.notchSpace.windows.insert(createdWindow)
+                        }
+                        createdWindow.orderFrontRegardless()
+                    }
                     
                     if viewModel.notchState == .closed {
                         viewModel.close()
@@ -1448,12 +1483,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             vm.screen = selectedScreen.localizedName
             vm.notchSize = getClosedNotchSize(screen: selectedScreen.localizedName)
             
+            var createdWindow: NSWindow?
             if window == nil {
                 window = createDynamicIslandWindow(for: selectedScreen, with: vm)
+                createdWindow = window
             }
             
             if let window = window {
                 positionWindow(window, on: selectedScreen, changeAlpha: changeAlpha)
+
+                if let createdWindow {
+                    if Defaults[.hideNotchOption] == .never {
+                        NotchSpaceManager.shared.notchSpace.windows.insert(createdWindow)
+                    }
+                    createdWindow.orderFrontRegardless()
+                }
                 
                 if vm.notchState == .closed {
                     vm.close()
