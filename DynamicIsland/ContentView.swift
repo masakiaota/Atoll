@@ -213,7 +213,6 @@ struct ContentView: View {
     @State private var hoverClickMonitor: Any?
     @State private var hoverClickLocalMonitor: Any?
     @State private var stickyTerminalClickMonitor: Any?
-    @State private var hiddenEdgeHoverPollingTask: Task<Void, Never>?
     @State private var isHoveringClosedMusicWaveformControl: Bool = false
 
     @State private var gestureProgress: CGFloat = .zero
@@ -424,11 +423,16 @@ struct ContentView: View {
         hideNonNotchUntilHover && isNonNotchScreen && vm.notchState == .closed && !isSneakPeekVisibleOnCurrentScreen
     }
 
-    /// Whether the fallback top-edge hover detector should run.
-    /// This is only needed when the notch is fully hidden off-screen and
-    /// regular `.onHover` hit-testing may not trigger reliably.
-    private var shouldUseHiddenEdgeHoverPolling: Bool {
-        shouldHideUntilHover && !lockScreenManager.isLocked
+    /// State that controls the fallback detector used while the notch is hidden off-screen.
+    private var hiddenEdgeHoverPollingState: HiddenEdgeHoverPollingState {
+        HiddenEdgeHoverPollingState(
+            screenName: currentScreenName,
+            hidesUntilHover: hideNonNotchUntilHover,
+            isNonNotchScreen: isNonNotchScreen,
+            isNotchClosed: vm.notchState == .closed,
+            isSneakPeekVisible: isSneakPeekVisibleOnCurrentScreen,
+            isLocked: lockScreenManager.isLocked
+        )
     }
     
     /// Whether the LocalSend live activity should be shown
@@ -760,7 +764,6 @@ struct ContentView: View {
                     clearMusicControlVisibilityDeadline()
                 }
                 enqueueMusicControlWindowSync(forceRefresh: true)
-                startHiddenEdgeHoverPolling()
                 // Deterministic teardown for borderless panels (`.onDisappear` is
                 // unreliable); the window-cleanup path calls this before closing.
                 vm.onViewTeardown = { performViewTeardown() }
@@ -829,6 +832,22 @@ struct ContentView: View {
                 } else {
                     releaseMusicControlWindowUpdates(after: 0)
                     enqueueMusicControlWindowSync(forceRefresh: true, delay: 0.05)
+                }
+            }
+            .task(id: hiddenEdgeHoverPollingState) {
+                guard hiddenEdgeHoverPollingState.shouldPoll else { return }
+
+                while !Task.isCancelled {
+                    let hovering = hiddenHoverActivationContainsMouse()
+                    if hovering != isHovering {
+                        handleHover(hovering)
+                    }
+
+                    do {
+                        try await Task.sleep(for: .milliseconds(50))
+                    } catch {
+                        return
+                    }
                 }
             }
     }
@@ -1943,37 +1962,12 @@ struct ContentView: View {
         hoverTask?.cancel()
         stopHoverClickMonitor()
         removeStickyTerminalClickMonitor()
-        stopHiddenEdgeHoverPolling()
         cancelMusicControlWindowSync()
         hideMusicControlWindow()
         cancelMusicControlVisibilityTimer()
         clearMusicControlVisibilityDeadline()
         musicControlSuppressionTask?.cancel()
         isHoveringClosedMusicWaveformControl = false
-    }
-
-    private func startHiddenEdgeHoverPolling() {
-        guard hiddenEdgeHoverPollingTask == nil else { return }
-
-        hiddenEdgeHoverPollingTask = Task { @MainActor in
-            while !Task.isCancelled {
-                if self.shouldUseHiddenEdgeHoverPolling {
-                    let hovering = self.hiddenHoverActivationContainsMouse()
-                    if hovering != self.isHovering {
-                        self.handleHover(hovering)
-                    }
-                }
-
-                try? await Task.sleep(for: .milliseconds(50))
-            }
-
-            self.hiddenEdgeHoverPollingTask = nil
-        }
-    }
-
-    private func stopHiddenEdgeHoverPolling() {
-        hiddenEdgeHoverPollingTask?.cancel()
-        hiddenEdgeHoverPollingTask = nil
     }
 
     private func startHoverClickMonitor() {
