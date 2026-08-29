@@ -52,4 +52,27 @@ final class DynamicIslandUITests: XCTestCase {
             "Repeated display reconciliation should leave exactly one notch."
         )
     }
+
+    func testSystemHUDObservationRequiresAnEnabledStyleAndControl() {
+        XCTAssertFalse(shouldObserveHUD(style: false, volume: true))
+        XCTAssertFalse(shouldObserveHUD(style: false, volume: true, brightness: true, backlight: true))
+        XCTAssertFalse(shouldObserveHUD(style: true))
+        XCTAssertTrue(shouldObserveHUD(style: true, volume: true))
+        XCTAssertTrue(shouldObserveHUD(style: true, brightness: true))
+        XCTAssertTrue(shouldObserveHUD(style: true, backlight: true))
+    }
+
+    private func shouldObserveHUD(
+        style: Bool,
+        volume: Bool = false,
+        brightness: Bool = false,
+        backlight: Bool = false
+    ) -> Bool {
+        SystemHUDObservationPolicy.shouldObserve(
+            hasEnabledStyle: style,
+            volumeEnabled: volume,
+            brightnessEnabled: brightness,
+            keyboardBacklightEnabled: backlight
+        )
+    }
 }
