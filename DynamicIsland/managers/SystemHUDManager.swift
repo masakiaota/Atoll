@@ -112,36 +112,21 @@ class SystemHUDManager {
             guard let self = self, self.isSetupComplete, self.requiresSystemToggleHandling else {
                 return
             }
-            let flags = self.resolvedControlFlags()
-            self.changesObserver?.update(
-                volumeEnabled: flags.volume,
-                brightnessEnabled: flags.brightness,
-                keyboardBacklightEnabled: flags.backlight
-            )
+            self.scheduleControlFlagReconciliation()
         }.store(in: &cancellables)
         
         Defaults.publisher(.enableBrightnessHUD, options: []).sink { [weak self] _ in
             guard let self = self, self.isSetupComplete, self.requiresSystemToggleHandling else {
                 return
             }
-            let flags = self.resolvedControlFlags()
-            self.changesObserver?.update(
-                volumeEnabled: flags.volume,
-                brightnessEnabled: flags.brightness,
-                keyboardBacklightEnabled: flags.backlight
-            )
+            self.scheduleControlFlagReconciliation()
         }.store(in: &cancellables)
 
         Defaults.publisher(.enableKeyboardBacklightHUD, options: []).sink { [weak self] _ in
             guard let self = self, self.isSetupComplete, self.requiresSystemToggleHandling else {
                 return
             }
-            let flags = self.resolvedControlFlags()
-            self.changesObserver?.update(
-                volumeEnabled: flags.volume,
-                brightnessEnabled: flags.brightness,
-                keyboardBacklightEnabled: flags.backlight
-            )
+            self.scheduleControlFlagReconciliation()
         }.store(in: &cancellables)
         
         // Observe individual OSD toggles
@@ -149,36 +134,21 @@ class SystemHUDManager {
             guard let self = self, self.isSetupComplete, Defaults[.enableCustomOSD] else {
                 return
             }
-            let flags = self.resolvedControlFlags()
-            self.changesObserver?.update(
-                volumeEnabled: flags.volume,
-                brightnessEnabled: flags.brightness,
-                keyboardBacklightEnabled: flags.backlight
-            )
+            self.scheduleControlFlagReconciliation()
         }.store(in: &cancellables)
         
         Defaults.publisher(.enableOSDBrightness, options: []).sink { [weak self] _ in
             guard let self = self, self.isSetupComplete, Defaults[.enableCustomOSD] else {
                 return
             }
-            let flags = self.resolvedControlFlags()
-            self.changesObserver?.update(
-                volumeEnabled: flags.volume,
-                brightnessEnabled: flags.brightness,
-                keyboardBacklightEnabled: flags.backlight
-            )
+            self.scheduleControlFlagReconciliation()
         }.store(in: &cancellables)
         
         Defaults.publisher(.enableOSDKeyboardBacklight, options: []).sink { [weak self] _ in
             guard let self = self, self.isSetupComplete, Defaults[.enableCustomOSD] else {
                 return
             }
-            let flags = self.resolvedControlFlags()
-            self.changesObserver?.update(
-                volumeEnabled: flags.volume,
-                brightnessEnabled: flags.brightness,
-                keyboardBacklightEnabled: flags.backlight
-            )
+            self.scheduleControlFlagReconciliation()
         }.store(in: &cancellables)
 
         // Restart observer when third-party DDC integration state changes.
@@ -208,6 +178,16 @@ class SystemHUDManager {
 
     private var requiresSystemToggleHandling: Bool {
         Defaults[.enableSystemHUD] || Defaults[.enableVerticalHUD] || Defaults[.enableCircularHUD]
+    }
+
+    private var hasEnabledHUDStyle: Bool {
+        requiresSystemToggleHandling || Defaults[.enableCustomOSD]
+    }
+
+    private func scheduleControlFlagReconciliation() {
+        Task { @MainActor [weak self] in
+            await self?.reconcileControlFlags()
+        }
     }
     
     /// Public property to check if system operations are in progress
@@ -297,6 +277,19 @@ class SystemHUDManager {
     @MainActor
     private func startSystemObserver() async {
         guard let coordinator = coordinator, !isSystemOperationInProgress else { return }
+
+        let flags = resolvedControlFlags()
+        guard SystemHUDObservationPolicy.shouldObserve(
+            hasEnabledStyle: hasEnabledHUDStyle,
+            volumeEnabled: flags.volume,
+            brightnessEnabled: flags.brightness,
+            keyboardBacklightEnabled: flags.backlight
+        ) else {
+            if changesObserver != nil {
+                await stopSystemObserver()
+            }
+            return
+        }
         
         isSystemOperationInProgress = true
 
@@ -307,7 +300,6 @@ class SystemHUDManager {
         
         changesObserver = SystemChangesObserver(coordinator: coordinator)
 
-        let flags = resolvedControlFlags()
         changesObserver?.startObserving(
             volumeEnabled: flags.volume,
             brightnessEnabled: flags.brightness,
@@ -319,6 +311,29 @@ class SystemHUDManager {
         
         print("System observer started (HUD: \(Defaults[.enableSystemHUD]), OSD: \(Defaults[.enableCustomOSD]), Vertical: \(Defaults[.enableVerticalHUD]), ThirdPartyDDC: \(Defaults[.enableThirdPartyDDCIntegration]), Provider: \(Defaults[.thirdPartyDDCProvider].displayName), ExternalVolumeListener: \(Defaults[.enableExternalVolumeControlListener]))")
         isSystemOperationInProgress = false
+    }
+
+    @MainActor
+    private func reconcileControlFlags() async {
+        let flags = resolvedControlFlags()
+        let shouldObserve = SystemHUDObservationPolicy.shouldObserve(
+            hasEnabledStyle: hasEnabledHUDStyle,
+            volumeEnabled: flags.volume,
+            brightnessEnabled: flags.brightness,
+            keyboardBacklightEnabled: flags.backlight
+        )
+
+        if shouldObserve, let changesObserver {
+            changesObserver.update(
+                volumeEnabled: flags.volume,
+                brightnessEnabled: flags.brightness,
+                keyboardBacklightEnabled: flags.backlight
+            )
+        } else if shouldObserve {
+            await startSystemObserver()
+        } else if changesObserver != nil {
+            await stopSystemObserver()
+        }
     }
     
     @MainActor
