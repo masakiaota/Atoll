@@ -39,6 +39,7 @@ struct FileShareView: View {
     @State private var isProcessing = false
     @State private var pendingDropProviders: [NSItemProvider]?
     @State private var showLocalSendPicker = false
+    @State private var discoveryOwner = UUID()
     
     private var selectedProvider: QuickShareProvider {
         quickShare.availableProviders.first(where: { $0.id == quickShareProvider }) ?? QuickShareProvider(id: "System Share Menu", imageData: nil, supportsRawText: true)
@@ -53,7 +54,14 @@ struct FileShareView: View {
             .background(NSViewHost(view: $hostView))
             .onAppear {
                 quickShare.ensureDiscovered()
-                localSend.startDiscovery()
+                updateLocalSendDiscovery(for: quickShareProvider)
+            }
+            .onDisappear {
+                localSend.stopDiscovery(for: discoveryOwner)
+                LocalSendDevicePickerWindowManager.shared.hide()
+            }
+            .onChange(of: quickShareProvider) { _, provider in
+                updateLocalSendDiscovery(for: provider)
             }
             .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data, .image], isTargeted: $vm.dropZoneTargeting) { providers in
                 interactionNonce = .init()
@@ -309,6 +317,14 @@ struct FileShareView: View {
     }
 
     // MARK: - Actions
+
+    private func updateLocalSendDiscovery(for provider: String) {
+        if provider == "LocalSend" {
+            localSend.startDiscovery(for: discoveryOwner)
+        } else {
+            localSend.stopDiscovery(for: discoveryOwner)
+        }
+    }
 
     private func handleDrop(_ providers: [NSItemProvider]) async {
         isProcessing = true

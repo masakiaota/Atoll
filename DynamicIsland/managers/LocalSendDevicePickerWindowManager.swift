@@ -37,6 +37,8 @@ final class LocalSendDevicePickerWindowManager {
     private var window: NSWindow?
     private var onDeviceSelected: ((LocalSendDeviceInfo) -> Void)?
     private var onDismiss: (() -> Void)?
+    private var eventMonitor: Any?
+    private let discoveryOwner = UUID()
     
     private init() {}
     
@@ -60,6 +62,7 @@ final class LocalSendDevicePickerWindowManager {
         )
         
         if let existingWindow = window {
+            LocalSendService.shared.startDiscovery(for: discoveryOwner)
             let hostingView = NSHostingView(rootView: pickerView)
             applyLocalSendPanelCornerMask(hostingView, radius: cornerRadius)
             existingWindow.contentView = hostingView
@@ -68,6 +71,7 @@ final class LocalSendDevicePickerWindowManager {
         }
         
         guard let screen = NSScreen.main else { return }
+        LocalSendService.shared.startDiscovery(for: discoveryOwner)
         
         let windowSize = CGSize(width: 480, height: 400)
         let windowOrigin = CGPoint(
@@ -100,7 +104,7 @@ final class LocalSendDevicePickerWindowManager {
         newWindow.makeKeyAndOrderFront(nil)
         
         // Add click-outside-to-dismiss
-        NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
             guard let self, let window = self.window else { return event }
             let locationInWindow = event.locationInWindow
             let windowFrame = window.frame
@@ -118,6 +122,11 @@ final class LocalSendDevicePickerWindowManager {
     }
     
     func hide() {
+        LocalSendService.shared.stopDiscovery(for: discoveryOwner)
+        if let eventMonitor {
+            NSEvent.removeMonitor(eventMonitor)
+            self.eventMonitor = nil
+        }
         window?.orderOut(nil)
         window = nil
         onDeviceSelected = nil
@@ -228,7 +237,6 @@ struct LocalSendDevicePickerView: View {
         .shadow(color: Color.black.opacity(0.4), radius: 30, x: 0, y: 15)
         .compositingGroup()
         .onAppear {
-            localSend.startDiscovery()
             localSend.refreshDeviceScan()
         }
     }

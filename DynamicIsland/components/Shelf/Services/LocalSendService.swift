@@ -68,7 +68,7 @@ final class LocalSendService: NSObject, ObservableObject {
     private var discoveredByID: [String: (device: LocalSendDeviceInfo, lastSeen: Date)] = [:]
     private var recentProbeIPs: [String] = []
     private var knownPeerIPs: [String] = []
-    private var isStarted = false
+    private var discoveryUsage = LocalSendDiscoveryUsage()
     private var completionDismissTask: Task<Void, Never>?
 
     private override init() {
@@ -84,11 +84,8 @@ final class LocalSendService: NSObject, ObservableObject {
         rejectedDeviceIDs.removeAll()
     }
 
-    func startDiscovery() {
-        guard !isStarted else { return }
-        isStarted = true
-
-        startRegisterListenerIfNeeded()
+    func startDiscovery(for owner: UUID) {
+        guard discoveryUsage.acquire(for: owner) else { return }
 
         do {
             let group = try NWMulticastGroup(for: [
@@ -100,6 +97,8 @@ final class LocalSendService: NSObject, ObservableObject {
             let params = NWParameters.udp
             params.allowLocalEndpointReuse = true
             params.includePeerToPeer = true
+
+            startRegisterListenerIfNeeded()
 
             let connectionGroup = NWConnectionGroup(with: group, using: params)
             connectionGroup.setReceiveHandler(maximumMessageSize: 65_536) { [weak self] message, content, _ in
@@ -118,6 +117,7 @@ final class LocalSendService: NSObject, ObservableObject {
             cleanupTask = Task { [weak self] in
                 while let self, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    guard !Task.isCancelled else { return }
                     self.cleanupStale()
                 }
             }
@@ -125,17 +125,38 @@ final class LocalSendService: NSObject, ObservableObject {
             announceTask = Task { [weak self] in
                 while let self, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    guard !Task.isCancelled else { return }
                     self.sendAnnouncement()
                 }
             }
         } catch {
+            _ = discoveryUsage.release(for: owner)
             Logger.log("LocalSend discovery start failed: \(error.localizedDescription)", category: .extensions)
         }
     }
 
-    func refreshDeviceScan() {
+    func stopDiscovery(for owner: UUID) {
+        guard discoveryUsage.release(for: owner) else { return }
+
         activeRefreshTask?.cancel()
-        startDiscovery()
+        activeRefreshTask = nil
+        refreshSessionID = UUID()
+        isRefreshing = false
+
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        announceTask?.cancel()
+        announceTask = nil
+
+        connectionGroup?.cancel()
+        connectionGroup = nil
+        registerListener?.cancel()
+        registerListener = nil
+    }
+
+    func refreshDeviceScan() {
+        guard discoveryUsage.isActive else { return }
+        activeRefreshTask?.cancel()
 
         let sessionID = UUID()
         refreshSessionID = sessionID
@@ -629,10 +650,11 @@ final class LocalSendService: NSObject, ObservableObject {
                 on: NWEndpoint.Port(integerLiteral: NWEndpoint.Port.IntegerLiteralType(defaultPort))
             )
 
-            listener.stateUpdateHandler = { state in
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
                 if case let .failed(error) = state {
                     Task { @MainActor [weak self] in
                         Logger.log("LocalSend register listener failed: \(error.localizedDescription)", category: .extensions)
+                        guard self?.registerListener === listener else { return }
                         self?.registerListener = nil
                     }
                 }
