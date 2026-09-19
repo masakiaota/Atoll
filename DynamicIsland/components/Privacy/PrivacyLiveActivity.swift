@@ -63,9 +63,7 @@ struct PrivacyLiveActivity: View {
                 .frame(width: isExpanded && (recordingManager.isRecording || bothIndicatorsActive) ? max(0, vm.effectiveClosedNotchHeight - (isHovering ? 0 : 12) + gestureProgress / 2 + 20) : 0, height: vm.effectiveClosedNotchHeight - (isHovering ? 0 : 12))
             
             // Center - Black fill
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width + (isHovering ? 8 : 0))
+            NotchGap(width: vm.closedNotchSize.width + (isHovering ? 8 : 0))
             
             // Right side - Privacy indicators
             Color.clear

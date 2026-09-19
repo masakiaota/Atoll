@@ -77,13 +77,11 @@ struct LocalSendLiveActivity: View {
                 )
             
             // Center: closed notch body (slightly wider during transfers)
-            Rectangle()
-                .fill(.black)
-                .frame(
-                    width: vm.closedNotchSize.width
-                        + (isHovering ? 8 : 0)
-                        + (isActive ? 40 : 0)
-                )
+            NotchGap(
+                width: vm.closedNotchSize.width
+                    + (isHovering ? 8 : 0)
+                    + (isActive ? 40 : 0)
+            )
             
             // Right side: progress ring or status icon
             Color.clear

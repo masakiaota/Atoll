@@ -326,9 +326,7 @@ struct InlineHUD: View {
             }
             .frame(width: infoWidth, height: vm.notchSize.height - (hoverAnimation ? 0 : 12), alignment: .leading)
             
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width - 20)
+            NotchGap(width: vm.closedNotchSize.width - 20)
             
             HStack {
                 if (type == .mic) {

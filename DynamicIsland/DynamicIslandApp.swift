@@ -94,13 +94,15 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
-extension AppDelegate {
-    static var shared: AppDelegate? {
-        NSApplication.shared.delegate as? AppDelegate
-    }
-}
-
 class AppDelegate: NSObject, NSApplicationDelegate {
+    // NSApplication.delegate is SwiftUI's adapter, not this delegate instance.
+    private(set) static weak var shared: AppDelegate?
+
+    override init() {
+        super.init()
+        Self.shared = self
+    }
+
     var statusItem: NSStatusItem?
     var windows: [NSScreen: NSWindow] = [:]
     var viewModels: [NSScreen: DynamicIslandViewModel] = [:]
@@ -413,6 +415,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func positionWindow(_ window: NSWindow, on screen: NSScreen, changeAlpha: Bool = false)
     {
+        if (viewModels[screen] ?? vm).isMenuBarExpanded, let frame = screen.physicalNotchFrame {
+            (window as? DynamicIslandWindow)?.suppressMouseEvents = true
+            window.setFrame(frame, display: true)
+            return
+        }
+        (window as? DynamicIslandWindow)?.suppressMouseEvents = false
         if changeAlpha {
             window.alphaValue = 0
         }
@@ -545,6 +553,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// shadow insets and top-offset only when the screen lacks a physical notch
     /// and the user has chosen the Dynamic Island style.
     private func adjustedSizeForScreen(_ baseSize: CGSize, screen: NSScreen) -> CGSize {
+        let model = viewModels[screen] ?? vm
+        if let physical = screen.physicalNotchFrame {
+            if model.isMenuBarExpanded { return physical.size }
+            return baseSize
+        }
         guard shouldUseDynamicIslandMode(for: screen.localizedName) else {
             return baseSize
         }
@@ -578,7 +591,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func refreshMenuBarPresentation() {
+        windowSizeUpdateWorkItem?.cancel()
+        resizeWindows(to: calculateRequiredNotchSize(), animated: false, force: true)
+    }
+
     private func resizeWindow(_ window: NSWindow, on screen: NSScreen, to size: CGSize, animated: Bool) {
+        if (viewModels[screen] ?? vm).isMenuBarExpanded, let frame = screen.physicalNotchFrame {
+            (window as? DynamicIslandWindow)?.suppressMouseEvents = true
+            window.setFrame(frame, display: true)
+            return
+        }
+        (window as? DynamicIslandWindow)?.suppressMouseEvents = false
         let screenFrame = screen.frame
         // Clamp width to screen width so the notch never extends beyond screen edges on scaled displays
         let clampedWidth = min(size.width, screenFrame.width).rounded()

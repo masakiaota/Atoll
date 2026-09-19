@@ -30,6 +30,7 @@ struct ExtensionStandaloneLayout {
 }
 
 struct ExtensionLiveActivityStandaloneView: View {
+    @Environment(\.notchContentOnLeft) private var onLeft
     let payload: ExtensionLiveActivityPayload
     let layout: ExtensionStandaloneLayout
     let isHovering: Bool
@@ -52,10 +53,7 @@ struct ExtensionLiveActivityStandaloneView: View {
             )
             .frame(width: layout.leadingWidth, height: contentHeight)
 
-            Rectangle()
-                .fill(Color.black)
-                .frame(width: layout.centerWidth, height: contentHeight)
-                .overlay(EmptyView())
+            NotchGap(width: layout.centerWidth, height: contentHeight)
 
             ExtensionMusicWingView(
                 payload: payload,
@@ -64,7 +62,7 @@ struct ExtensionLiveActivityStandaloneView: View {
             )
                 .frame(width: layout.trailingWidth, height: contentHeight)
         }
-        .frame(width: layout.totalWidth, height: layout.outerHeight + (isHovering ? 8 : 0))
+        .frame(width: layout.totalWidth - (onLeft ? layout.centerWidth : 0), height: layout.outerHeight + (isHovering ? 8 : 0))
         .transition(
             .asymmetric(
                 insertion: .scale(scale: 0.95).combined(with: .opacity).animation(.spring(response: 0.4, dampingFraction: 0.8)),

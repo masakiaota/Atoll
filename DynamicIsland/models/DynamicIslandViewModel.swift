@@ -30,6 +30,16 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
 
     @Published var contentType: ContentType = .normal
     @Published private(set) var notchState: NotchState = .closed
+    @Published private(set) var isMenuBarExpanded = false
+    @Published private(set) var availableLeftWidth: CGFloat? = nil
+
+    var physicalNotchFrame: CGRect? {
+        (NSScreen.screens.first { $0.localizedName == screen } ?? NSScreen.main)?.physicalNotchFrame
+    }
+
+    var usesLeftSideLayout: Bool {
+        notchState == .closed && physicalNotchFrame != nil
+    }
 
     @Published var dragDetectorTargeting: Bool = false
     @Published var dropZoneTargeting: Bool = false
@@ -134,6 +144,40 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         self.screen = screen
         notchSize = getClosedNotchSize(screen: screen)
         closedNotchSize = notchSize
+
+        let menuBar = MenuBarOverflowMonitor.shared
+        menuBar.$expandedScreens.combineLatest($screen)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] expanded, screenName in
+                guard let self else { return }
+                let isExpanded = expanded.contains(screenName ?? NSScreen.main?.localizedName ?? "")
+                guard self.isMenuBarExpanded != isExpanded else { return }
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    self.isMenuBarExpanded = isExpanded
+                    if isExpanded {
+                        self.notchState = .closed
+                        self.notchSize = self.physicalNotchFrame?.size ?? self.closedNotchSize
+                        self.resetScrollGestureSuppression()
+                        self.resetAutoCloseSuppression()
+                        self.isHoveringMediaPlayer = false
+                    } else {
+                        self.notchSize = self.closedNotchSize
+                    }
+                }
+                if isExpanded {
+                    MusicControlWindowManager.shared.hide()
+                }
+                AppDelegate.shared?.refreshMenuBarPresentation()
+            }
+            .store(in: &cancellables)
+        menuBar.$availableLeftWidths.combineLatest($screen)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] widths, screenName in
+                self?.availableLeftWidth = widths[screenName ?? NSScreen.main?.localizedName ?? ""]
+            }
+            .store(in: &cancellables)
 
         Publishers.CombineLatest($dropZoneTargeting, $dragDetectorTargeting)
             .map { value1, value2 in
@@ -320,6 +364,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     }
 
     func isMouseHovering(position: NSPoint = NSEvent.mouseLocation) -> Bool {
+        guard !isMenuBarExpanded else { return false }
         let screenFrame = getScreenFrame(screen)
         if let frame = screenFrame {
             
@@ -333,6 +378,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     }
 
     func open() {
+        guard !isMenuBarExpanded else { return }
         let targetSize = calculateDynamicNotchSize()
 
         let applyWindowResize: () -> Void = {

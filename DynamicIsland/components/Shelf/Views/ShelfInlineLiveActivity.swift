@@ -39,9 +39,7 @@ struct ShelfInlineLiveActivity: View {
                 .frame(width: sideWidth, alignment: .leading)
 
             // Physical notch / pill space
-            Rectangle()
-                .fill(Color.black)
-                .frame(width: vm.closedNotchSize.width)
+            NotchGap(width: vm.closedNotchSize.width)
 
             // RIGHT of notch — file count in white
             Text("\(shelfState.items.count)")

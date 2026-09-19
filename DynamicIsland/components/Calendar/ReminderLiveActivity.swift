@@ -58,9 +58,7 @@ struct ReminderLiveActivity: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 }
 
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width, height: notchContentHeight)
+            NotchGap(width: vm.closedNotchSize.width, height: notchContentHeight)
 
             Color.clear
                 .frame(width: rightWingWidth(for: reminder, now: now), height: notchContentHeight)

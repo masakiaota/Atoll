@@ -300,7 +300,7 @@ struct ContentView: View {
     }
 
     private var interactionsEnabled: Bool {
-        !lockScreenManager.isLocked
+        !lockScreenManager.isLocked && !vm.isMenuBarExpanded
     }
 
     private var isIslandMode: Bool {
@@ -342,17 +342,6 @@ struct ContentView: View {
             && !isMusicHUDDeferredAfterUnlock
     }
 
-    private var closedLiveActivitySwapTransition: AnyTransition {
-        .asymmetric(
-            insertion: .opacity
-                .combined(with: .scale(scale: 0.965, anchor: .center))
-                .animation(.spring(response: 0.34, dampingFraction: 0.88)),
-            removal: .opacity
-                .combined(with: .scale(scale: 0.92, anchor: .center))
-                .animation(.smooth(duration: 0.22))
-        )
-    }
-    
     // Use minimalistic corner radius ONLY when opened, keep normal when closed
     private var activeCornerRadiusInsets: (opened: (top: CGFloat, bottom: CGFloat), closed: (top: CGFloat, bottom: CGFloat)) {
         if enableMinimalisticUI {
@@ -401,12 +390,6 @@ struct ContentView: View {
             && !lockScreenManager.isLocked
             && !isCurrentScreenExpansionVisible
             && !isSneakPeekVisibleOnCurrentScreen
-    }
-
-    private var showsPhysicalFocusLiveActivity: Bool {
-        !isNonNotchScreen
-            && canShowFocusLiveActivity
-            && !(capsLockManager.isCapsLockActive && enableCapsLockIndicator)
     }
 
     /// Whether the global sneak peek is visible on this specific screen.
@@ -545,12 +528,23 @@ struct ContentView: View {
     }
 
     private var mainLayoutBase: some View {
-        NotchLayout()
+        HStack(alignment: .top, spacing: 0) {
+            NotchLayout()
+            if vm.usesLeftSideLayout, let physical = vm.physicalNotchFrame {
+                Color.black.frame(width: physical.width, height: vm.effectiveClosedNotchHeight)
+            }
+        }
+            .environment(\.notchContentOnLeft, vm.usesLeftSideLayout)
             .frame(alignment: .top)
-            .padding(.horizontal, notchHorizontalPadding)
+            .padding(.leading, notchHorizontalPadding)
+            .padding(.trailing, vm.usesLeftSideLayout ? 0 : notchHorizontalPadding)
             .padding([.horizontal, .bottom], vm.notchState == .open ? 12 : 0)
-            .background(showsPhysicalFocusLiveActivity ? Color.clear : Color.black)
-            .clipShape(resolvedClipShape)
+            .modifier(NotchSurface(
+                shape: resolvedClipShape,
+                selection: canShowFocusLiveActivity,
+                animateSelectionChanges: vm.notchState == .closed && !vm.isMenuBarExpanded
+            ))
+            .background(NotchMouseRegion(shape: resolvedClipShape))
             .compositingGroup()
             .shadow(
                 color: ((vm.notchState == .open || isHovering) && Defaults[.enableShadow])
@@ -656,11 +650,6 @@ struct ContentView: View {
                     // tab already selected, where the cursor never enters the notch).
                     syncStickyTerminalOutsideClickMonitor()
                 }
-                #if os(macOS)
-                if newState == .open {
-                    TimerControlWindowManager.shared.hide()
-                }
-                #endif
             }
             .onChange(of: vm.isBatteryPopoverActive) { _, newPopoverState in
                 runAfter(0.1) {
@@ -731,7 +720,34 @@ struct ContentView: View {
 
     private var rootBodyView: some View {
         ZStack(alignment: .top) {
-            configuredMainLayout
+            if vm.isMenuBarExpanded, let physical = vm.physicalNotchFrame {
+                Color.black
+                    .frame(width: physical.width, height: physical.height)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("AtollMenuBarCollapsed")
+            } else {
+                // Keep one view hierarchy so existing content and shape animations
+                // survive the transition between compact and expanded presentation.
+                NotchPresentationLayout(physicalWidth: vm.physicalNotchFrame?.width ?? 0,
+                                        leftAligned: vm.usesLeftSideLayout ? 1 : 0) {
+                    ViewThatFits(in: .horizontal) {
+                        configuredMainLayout.fixedSize(horizontal: vm.usesLeftSideLayout, vertical: false)
+                        Color.black
+                            .frame(width: vm.physicalNotchFrame?.width ?? vm.closedNotchSize.width,
+                                   height: vm.effectiveClosedNotchHeight)
+                            .background(NotchMouseRegion(shape: AnyShape(Rectangle())))
+                    }
+                    .frame(maxWidth: vm.usesLeftSideLayout
+                           ? min((dynamicNotchSize.width + (vm.physicalNotchFrame?.width ?? 0)) / 2,
+                                 (vm.physicalNotchFrame?.width ?? 0) + (vm.availableLeftWidth ?? dynamicNotchSize.width))
+                           : .infinity,
+                           alignment: vm.usesLeftSideLayout ? .trailing : .center)
+                }
+                .animation(useModernCloseAnimation
+                           ? .spring(response: vm.notchState == .open ? 0.42 : 0.45,
+                                     dampingFraction: vm.notchState == .open ? 0.8 : 1)
+                           : .spring.speed(1.2), value: vm.notchState)
+            }
         }
         .frame(
             maxWidth: (dynamicNotchSize.width + (vm.notchState == .open ? 24 : 0) + (isDynamicIslandMode ? dynamicIslandShadowInset * 2 : 0)).rounded(),
@@ -740,7 +756,9 @@ struct ContentView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environmentObject(privacyManager)
-        .background(dragDetector)
+        .background {
+            if !vm.isMenuBarExpanded { dragDetector }
+        }
         .environmentObject(vm)
         .environmentObject(webcamManager)
     }
@@ -770,6 +788,17 @@ struct ContentView: View {
             }
             .onChange(of: terminalStickyMode) { _, _ in
                 syncStickyTerminalOutsideClickMonitor()
+            }
+            .onChange(of: vm.isMenuBarExpanded) { _, expanded in
+                if expanded {
+                    hoverTask?.cancel()
+                    isHovering = false
+                    gestureProgress = 0
+                    cancelMusicControlWindowSync()
+                    hideMusicControlWindow()
+                } else {
+                    enqueueMusicControlWindowSync(forceRefresh: true)
+                }
             }
             .onChange(of: vm.notchState) { _, state in
                 if state == .open {
@@ -961,11 +990,11 @@ struct ContentView: View {
                       } else if canShowFocusLiveActivity {
                           FocusTaskLiveActivity(isNonNotchScreen: isNonNotchScreen)
                               .id("closed-focus-task-live-activity")
-                              .transition(closedLiveActivitySwapTransition)
+                              .transition(ClosedLiveActivityMotion.transition)
                       } else if canShowMusicDuringExpansion && musicPairingEligible {
                           MusicLiveActivity(secondary: musicSecondary)
                               .id("closed-music-live-activity")
-                              .transition(closedLiveActivitySwapTransition)
+                              .transition(ClosedLiveActivityMotion.transition)
                       } else if (!isCurrentScreenExpansionVisible || currentScreenExpansionType == .timer) && vm.notchState == .closed && timerManager.isTimerActive && coordinator.timerLiveActivityEnabled && !vm.hideOnClosed {
                           TimerLiveActivity()
                       } else if (!isCurrentScreenExpansionVisible || currentScreenExpansionType == .reminder) && vm.notchState == .closed && reminderManager.isActive && enableReminderLiveActivity && !vm.hideOnClosed {
@@ -983,7 +1012,7 @@ struct ContentView: View {
                     } else if (!isCurrentScreenExpansionVisible || currentScreenExpansionType == .lockScreen) && vm.notchState == .closed && (lockScreenManager.isLocked || !lockScreenManager.isLockIdle) && Defaults[.enableLockScreenLiveActivity] && !vm.hideOnClosed {
                         LockScreenLiveActivity()
                             .id("lock-screen-live-activity")
-                            .transition(closedLiveActivitySwapTransition)
+                            .transition(ClosedLiveActivityMotion.transition)
                     } else if (!isCurrentScreenExpansionVisible || currentScreenExpansionType == .privacy) && vm.notchState == .closed && privacyManager.hasAnyIndicator && (Defaults[.enableCameraDetection] || Defaults[.enableMicrophoneDetection]) && !vm.hideOnClosed {
                         PrivacyLiveActivity()
                       } else if let extensionPayload = extensionStandalonePayload {
@@ -1007,7 +1036,7 @@ struct ContentView: View {
                           DynamicIslandHeader()
                               .frame(height: (Defaults[.enableMinimalisticUI] && isDynamicIslandMode) ? nil : max(24, vm.effectiveClosedNotchHeight))
                        } else {
-                           Rectangle().fill(.clear).frame(width: vm.closedNotchSize.width - 20, height: vm.effectiveClosedNotchHeight)
+                           NotchGap(width: vm.closedNotchSize.width - 20, height: vm.effectiveClosedNotchHeight)
                        }
                       
                       if isSneakPeekVisibleOnCurrentScreen {
@@ -1199,9 +1228,7 @@ struct ContentView: View {
                 Rectangle()
                     .fill(.clear)
                     .frame(width: sideSize, height: sideSize)
-                Rectangle()
-                    .fill(.black)
-                    .frame(width: vm.closedNotchSize.width - 20)
+                NotchGap(width: vm.closedNotchSize.width - 20)
                 IdleAnimationView()
                     .frame(width: sideSize, height: sideSize)
             }
@@ -1227,7 +1254,9 @@ struct ContentView: View {
             centerBaseWidth: centerBaseWidth,
             notchHeight: notchContentHeight
         )
-        let effectiveCenterWidth = inlineSneakPeekActive ? 380 : centerBaseWidth
+        let effectiveCenterWidth: CGFloat = vm.usesLeftSideLayout
+            ? (inlineSneakPeekActive ? max(0, 380 - centerBaseWidth) : 0)
+            : (inlineSneakPeekActive ? 380 : centerBaseWidth)
         let notchWidth = wingBaseWidth + effectiveCenterWidth + rightWingWidth
         let badgeBaseSize = max(13, notchContentHeight * 0.36)
         let badgeDisplaySize = badgeDisplaySize(for: secondary, baseSize: badgeBaseSize)
@@ -1264,12 +1293,12 @@ struct ContentView: View {
                                 isExplicit: musicManager.isCurrentTrackExplicit,
                                 textColor: Defaults[.coloredSpectrogram] ? Color(nsColor: musicManager.avgColor) : Color.gray,
                                 minDuration: 0.4,
-                                frameWidth: max(0, (effectiveCenterWidth - vm.closedNotchSize.width) / 2 - 12),
+                                frameWidth: max(0, (effectiveCenterWidth - (vm.usesLeftSideLayout ? 0 : vm.closedNotchSize.width)) / 2 - 12),
                                 badgeHeight: 13
                             )
                             .padding(.leading, 8)
                             .opacity((coordinator.expandingView.show && Defaults[.enableSneakPeek] && Defaults[.sneakPeekStyles] == .inline) ? 1 : 0)
-                            Spacer(minLength: vm.closedNotchSize.width)
+                            Spacer(minLength: vm.usesLeftSideLayout ? 8 : vm.closedNotchSize.width)
                             Text(musicManager.artistName)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -1281,11 +1310,11 @@ struct ContentView: View {
                                 .constant(timerManager.timerName),
                                 textColor: timerManager.timerColor,
                                 minDuration: 0.4,
-                                frameWidth: max(0, (effectiveCenterWidth - vm.closedNotchSize.width) / 2 - 12)
+                                frameWidth: max(0, (effectiveCenterWidth - (vm.usesLeftSideLayout ? 0 : vm.closedNotchSize.width)) / 2 - 12)
                             )
                             .padding(.leading, 8)
                             .opacity((coordinator.expandingView.show && Defaults[.enableSneakPeek] && Defaults[.sneakPeekStyles] == .inline) ? 1 : 0)
-                            Spacer(minLength: vm.closedNotchSize.width)
+                            Spacer(minLength: vm.usesLeftSideLayout ? 8 : vm.closedNotchSize.width)
                             Text(timerManager.formattedRemainingTime())
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -1903,6 +1932,7 @@ struct ContentView: View {
 
     // MARK: - Private Methods
     private func openNotch() {
+        guard !vm.isMenuBarExpanded else { return }
         withAnimation(.bouncy.speed(1.2)) {
             vm.open()
         }
@@ -2521,7 +2551,7 @@ struct ContentView: View {
     }
 
     private func shouldShowMusicControlWindow() -> Bool {
-        guard musicControlWindowEnabled,
+        guard !vm.isMenuBarExpanded, musicControlWindowEnabled,
               coordinator.musicLiveActivityEnabled,
               standardMediaControlsActive,
               vm.notchState == .closed,

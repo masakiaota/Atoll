@@ -43,14 +43,12 @@ struct DoNotDisturbLiveActivity: View {
             iconWing
                 .frame(width: iconWingWidth, height: wingHeight)
 
-            Rectangle()
-                .fill(Color.black)
-                .frame(width: centerSegmentWidth)
+            NotchGap(width: centerSegmentWidth)
 
             labelWing
                 .frame(width: labelWingWidth, height: wingHeight)
         }
-        .frame(width: notchEnvelopeWidth, height: vm.effectiveClosedNotchHeight)
+        .frame(width: notchEnvelopeWidth - (vm.usesLeftSideLayout ? centerSegmentWidth : 0), height: vm.effectiveClosedNotchHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityDescription)
         .onAppear(perform: handleInitialState)
