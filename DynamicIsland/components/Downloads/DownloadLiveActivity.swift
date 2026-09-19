@@ -60,13 +60,11 @@ struct DownloadLiveActivity: View {
                 )
             
             // Center: closed notch body (slightly wider during downloads)
-            Rectangle()
-                .fill(.black)
-                .frame(
-                    width: vm.closedNotchSize.width
-                        + (isHovering ? 8 : 0)
-                        + (downloadManager.isDownloading ? 40 : 0)
-                )
+            NotchGap(
+                width: vm.closedNotchSize.width
+                    + (isHovering ? 8 : 0)
+                    + (downloadManager.isDownloading ? 40 : 0)
+            )
             
             // Right side: indeterminate-style progress bar
             Color.clear
@@ -109,5 +107,4 @@ struct DownloadLiveActivity: View {
         }
     }
 }
-
 

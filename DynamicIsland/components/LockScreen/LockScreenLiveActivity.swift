@@ -80,9 +80,7 @@ struct LockScreenLiveActivity: View {
                 .clipped()
             
             // Center - Black fill
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width + (isHovering ? 8 : 0))
+            NotchGap(width: vm.closedNotchSize.width + (isHovering ? 8 : 0))
             
             // Right - Empty for symmetry with animation
             Color.clear

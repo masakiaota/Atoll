@@ -6496,7 +6496,6 @@ struct TimerSettings: View {
     @Default(.timerShowsProgress) private var showsProgress
     @Default(.timerProgressStyle) private var progressStyle
     @Default(.showTimerPresetsInNotchTab) private var showTimerPresetsInNotchTab
-    @Default(.timerControlWindowEnabled) private var controlWindowEnabled
     @Default(.mirrorSystemTimer) private var mirrorSystemTimer
     @Default(.timerDisplayMode) private var timerDisplayMode
     @Default(.timerInputStyle) private var timerInputStyle
@@ -6593,16 +6592,6 @@ struct TimerSettings: View {
             appearanceSection
             timerPresetsSection
             timerSoundSection
-        }
-        .onAppear {
-            if showsLabel {
-                controlWindowEnabled = false
-            }
-        }
-        .onChange(of: showsLabel) { _, show in
-            if show {
-                controlWindowEnabled = false
-            }
         }
     }
 
@@ -6739,10 +6728,6 @@ struct TimerSettings: View {
             Toggle("Show progress", isOn: $showsProgress)
             Toggle("Show preset list in timer tab", isOn: $showTimerPresetsInNotchTab)
                 .settingsHighlight(id: highlightID("Show preset list in timer tab"))
-
-            Toggle("Show floating pause/stop controls", isOn: $controlWindowEnabled)
-                .disabled(showsLabel)
-                .help("These controls sit beside the notch while a timer runs. They require the timer name to stay hidden for spacing.")
 
             Picker("Progress style", selection: $progressStyle) {
                 ForEach(TimerProgressStyle.allCases) { style in

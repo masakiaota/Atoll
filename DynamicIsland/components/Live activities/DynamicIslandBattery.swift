@@ -476,6 +476,7 @@ private struct BatteryCompactStatusRow: View {
 }
 
 struct BatteryTemporaryActivityView: View {
+    @Environment(\.notchContentOnLeft) private var onLeft
     let kind: BatteryTemporaryHUDKind
     let batteryLevel: Int
     let isLowPowerMode: Bool
@@ -492,7 +493,7 @@ struct BatteryTemporaryActivityView: View {
     @State private var changeBatteryIndicator = true
 
     private var style: BatteryNotificationStyle {
-        if kind == .charging {
+        if kind == .charging || onLeft {
             return .compact
         }
         if let styleOverride {
@@ -545,7 +546,7 @@ struct BatteryTemporaryActivityView: View {
         ZStack(alignment: .bottom) {
             content
         }
-        .frame(width: metrics.width, height: metrics.height, alignment: .bottom)
+        .frame(width: onLeft ? max(180, metrics.width - closedNotchWidth) : metrics.width, height: metrics.height, alignment: .bottom)
         .clipShape(surfaceShape)
         .onAppear(perform: prepareAnimations)
     }

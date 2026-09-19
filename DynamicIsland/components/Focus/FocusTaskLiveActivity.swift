@@ -25,7 +25,6 @@ struct FocusTaskLiveActivity: View {
                     physicalNotchContent(date: context.date)
                 }
             }
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }
 
@@ -46,7 +45,6 @@ struct FocusTaskLiveActivity: View {
         }
         .padding(.horizontal, 11)
         .frame(width: width, height: vm.effectiveClosedNotchHeight)
-        .background(Color.black)
     }
 
     private func physicalNotchContent(date: Date) -> some View {
@@ -55,23 +53,22 @@ struct FocusTaskLiveActivity: View {
 
         return HStack(spacing: 0) {
             Color.clear
-                .frame(width: wingWidth, height: height)
+                .frame(width: vm.usesLeftSideLayout ? 0 : wingWidth, height: height)
 
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width, height: height)
+            NotchGap(width: vm.closedNotchSize.width, height: height)
 
             elapsedText(date)
                 .frame(width: wingWidth, height: height)
-                .background(Color.black)
         }
         .frame(height: height)
     }
 
     private func elapsedText(_ date: Date) -> some View {
-        Text(FocusTaskDurationFormatter.string(from: manager.elapsed(at: date)))
+        let elapsed = FocusTaskDurationFormatter.string(from: manager.elapsed(at: date))
+        return Text(elapsed)
             .font(.system(size: 12, weight: .semibold, design: .monospaced))
             .foregroundStyle(.white)
             .contentTransition(.numericText())
+            .animation(ClosedLiveActivityMotion.valueUpdate, value: elapsed)
     }
 }

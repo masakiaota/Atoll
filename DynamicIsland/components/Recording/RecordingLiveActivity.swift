@@ -50,9 +50,7 @@ struct RecordingLiveActivity: View {
                 .frame(width: isExpanded ? max(0, vm.effectiveClosedNotchHeight - (isHovering ? 0 : 12) + gestureProgress / 2) : 0, height: vm.effectiveClosedNotchHeight - (isHovering ? 0 : 12))
             
             // Center - Black fill
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width + (isHovering ? 8 : 0))
+            NotchGap(width: vm.closedNotchSize.width + (isHovering ? 8 : 0))
             
             // Right - Empty for symmetry with animation
             Color.clear
