@@ -4,22 +4,13 @@ on:
   push:
     branches:
       - main
-      - dev
-      - nightly
-      - alpha
-      - beta
   pull_request:
     branches:
-      - dev
+      - main
 
 jobs:
   build:
     name: Build
-
-    # Skip CI-generated commits (appcast updates, changelog archives)
-    if: >-
-      !contains(github.event.head_commit.message, 'ci: update appcast') &&
-      !contains(github.event.head_commit.message, 'ci: archive changelog')
 
     strategy:
       matrix:
