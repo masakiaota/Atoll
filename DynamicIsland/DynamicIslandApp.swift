@@ -104,8 +104,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     var statusItem: NSStatusItem?
-    var windows: [NSScreen: NSWindow] = [:]
-    var viewModels: [NSScreen: DynamicIslandViewModel] = [:]
+    var windows: [CGDirectDisplayID: NSWindow] = [:]
+    var viewModels: [CGDirectDisplayID: DynamicIslandViewModel] = [:]
     var window: NSWindow?
     let vm: DynamicIslandViewModel = .init()
     @ObservedObject var coordinator = DynamicIslandViewCoordinator.shared
@@ -121,7 +121,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let mediaControlsStateCoordinator = MediaControlsStateCoordinator.shared
     let systemTimerBridge = SystemTimerBridge.shared
     var closeNotchWorkItem: DispatchWorkItem?
-    private var previousScreens: [NSScreen]?
     private var onboardingWindowController: NSWindowController?
     private var cancellables = Set<AnyCancellable>()
     private var windowsHiddenForLock = false
@@ -134,7 +133,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 //    let calendarManager = CalendarManager.shared
 //    let webcamManager = WebcamManager.shared
 //    var closeNotchWorkItem: DispatchWorkItem?
-//    private var previousScreens: [NSScreen]?
 //    private var onboardingWindowController: NSWindowController?
 //    private var cancellables = Set<AnyCancellable>()
 //    
@@ -332,8 +330,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         windows.removeAll()
         viewModels.removeAll()
 
-        for (screen, window) in windowsToClose {
-            let viewModel = viewModelsToDestroy[screen]
+        for (displayID, window) in windowsToClose {
+            let viewModel = viewModelsToDestroy[displayID]
             viewModel?.onViewTeardown?()
             viewModel?.onViewTeardown = nil
             closeDynamicIslandWindow(window)
@@ -415,31 +413,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func positionWindow(_ window: NSWindow, on screen: NSScreen, changeAlpha: Bool = false)
     {
-        if (viewModels[screen] ?? vm).isMenuBarExpanded, let frame = screen.physicalNotchFrame {
-            (window as? DynamicIslandWindow)?.suppressMouseEvents = true
-            window.setFrame(frame, display: true)
-            return
-        }
-        (window as? DynamicIslandWindow)?.suppressMouseEvents = false
         if changeAlpha {
             window.alphaValue = 0
         }
-        
-        // Use the same centering logic as updateWindowSizeIfNeeded()
-        let screenFrame = screen.frame
-        let centerX = screenFrame.origin.x + (screenFrame.width / 2)
-        let roundedWidth = window.frame.width.rounded()
-        let roundedHeight = window.frame.height.rounded()
-        let newX = (centerX - (roundedWidth / 2)).rounded()
-        let newY = (screenFrame.origin.y + screenFrame.height - roundedHeight).rounded()
-
-        window.setFrame(NSRect(
-            x: newX,
-            y: newY,
-            width: roundedWidth,
-            height: roundedHeight
-        ), display: false)
-        
+        resizeWindow(window, on: screen, to: window.frame.size, animated: false)
         if changeAlpha {
             window.alphaValue = 1
         }
@@ -553,7 +530,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// shadow insets and top-offset only when the screen lacks a physical notch
     /// and the user has chosen the Dynamic Island style.
     private func adjustedSizeForScreen(_ baseSize: CGSize, screen: NSScreen) -> CGSize {
-        let model = viewModels[screen] ?? vm
+        let model = viewModels[screen.displayID] ?? vm
         if let physical = screen.physicalNotchFrame {
             if model.isMenuBarExpanded { return physical.size }
             return baseSize
@@ -575,7 +552,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard size.width > 0, size.height > 0 else { return }
 
         if Defaults[.showOnAllDisplays] {
-            for (screen, window) in windows {
+            // NSScreen instances are snapshots. Resolve current geometry by ID
+            // rather than retaining a screen from when the window was created.
+            for screen in NSScreen.screens {
+                guard let window = windows[screen.displayID] else { continue }
                 let screenSize = adjustedSizeForScreen(size, screen: screen)
                 if force || window.frame.size != screenSize {
                     resizeWindow(window, on: screen, to: screenSize, animated: animated)
@@ -597,7 +577,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func resizeWindow(_ window: NSWindow, on screen: NSScreen, to size: CGSize, animated: Bool) {
-        if (viewModels[screen] ?? vm).isMenuBarExpanded, let frame = screen.physicalNotchFrame {
+        if (viewModels[screen.displayID] ?? vm).isMenuBarExpanded, let frame = screen.physicalNotchFrame {
             (window as? DynamicIslandWindow)?.suppressMouseEvents = true
             window.setFrame(frame, display: true)
             return
@@ -618,20 +598,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func restoreFocusTaskWindowsAfterTransition() {
         guard FocusTaskManager.shared.hasActiveTask else { return }
 
-        let focusWindows: [NSWindow]
-        if Defaults[.showOnAllDisplays] {
-            focusWindows = Array(windows.values)
-        } else if let window {
-            focusWindows = [window]
-        } else {
-            focusWindows = []
-        }
-
         // A transient panel is hidden while Mission Control is visible, which is
         // intentional. Reassert its order only after an app or Space transition
         // completes so Focus returns immediately instead of waiting for AppKit.
-        DispatchQueue.main.async {
-            guard FocusTaskManager.shared.hasActiveTask else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, FocusTaskManager.shared.hasActiveTask,
+                  !self.windowsHiddenForLock else { return }
+            // Resolve ownership at execution time: a display/mode change may
+            // have closed the windows that existed when restoration was queued.
+            let focusWindows: [NSWindow]
+            if Defaults[.showOnAllDisplays] {
+                focusWindows = Array(self.windows.values)
+            } else {
+                focusWindows = self.window.map { [$0] } ?? []
+            }
             focusWindows.forEach { $0.orderFrontRegardless() }
         }
     }
@@ -954,7 +934,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if Defaults[.showOnAllDisplays] {
                 for screen in NSScreen.screens {
                     if screen.frame.contains(mouseLocation) {
-                        if let screenViewModel = self.viewModels[screen] {
+                        if let screenViewModel = self.viewModels[screen.displayID] {
                             viewModel = screenViewModel
                             break
                         }
@@ -1011,8 +991,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             playWelcomeSound()
         }
         
-        previousScreens = NSScreen.screens
-
         // Skip weather under UI testing: prepareLocationAccess prompts for Location.
         if Defaults[.enableLockScreenWeatherWidget] && !AppRuntimeEnvironment.isUITesting {
             LockScreenWeatherManager.shared.prepareLocationAccess()
@@ -1426,33 +1404,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     @objc func screenConfigurationDidChange() {
-        let currentScreens = NSScreen.screens
-
-        let screensChanged =
-            currentScreens.count != previousScreens?.count
-            || Set(currentScreens.map { $0.localizedName })
-                != Set(previousScreens?.map { $0.localizedName } ?? [])
-            || Set(currentScreens.map { $0.frame }) != Set(previousScreens?.map { $0.frame } ?? [])
-
-        previousScreens = currentScreens
-        
-        if screensChanged {
-            DispatchQueue.main.async { [weak self] in
-                self?.adjustWindowPosition(changeAlpha: true)
-            }
+        // The notification is the invalidation signal. Reconcile against the
+        // latest screens, including ID/scale changes with unchanged names/frames.
+        DispatchQueue.main.async { [weak self] in
+            self?.adjustWindowPosition(changeAlpha: true)
         }
     }
 
     @objc func adjustWindowPosition(changeAlpha: Bool = false) {
         if Defaults[.showOnAllDisplays] {
-            let currentScreens = Set(NSScreen.screens)
+            let currentScreens = NSScreen.screens
+            let currentDisplayIDs = Set(currentScreens.map(\.displayID))
             
-            let removedScreens = windows.keys.filter { !currentScreens.contains($0) }
-            for screen in removedScreens {
-                if let window = windows[screen] {
-                    let viewModel = viewModels[screen]
-                    windows.removeValue(forKey: screen)
-                    viewModels.removeValue(forKey: screen)
+            let removedDisplayIDs = windows.keys.filter { !currentDisplayIDs.contains($0) }
+            for displayID in removedDisplayIDs {
+                if let window = windows[displayID] {
+                    let viewModel = viewModels[displayID]
+                    windows.removeValue(forKey: displayID)
+                    viewModels.removeValue(forKey: displayID)
                     viewModel?.onViewTeardown?()
                     viewModel?.onViewTeardown = nil
                     closeDynamicIslandWindow(window)
@@ -1461,17 +1430,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             
             for screen in currentScreens {
+                let displayID = screen.displayID
                 var createdWindow: NSWindow?
-                if windows[screen] == nil {
+                if windows[displayID] == nil {
                     let viewModel = DynamicIslandViewModel(screen: screen.localizedName)
                     let window = createDynamicIslandWindow(for: screen, with: viewModel)
                     
-                    windows[screen] = window
-                    viewModels[screen] = viewModel
+                    windows[displayID] = window
+                    viewModels[displayID] = viewModel
                     createdWindow = window
                 }
                 
-                if let window = windows[screen], let viewModel = viewModels[screen] {
+                if let window = windows[displayID], let viewModel = viewModels[displayID] {
                     positionWindow(window, on: screen, changeAlpha: changeAlpha)
 
                     if let createdWindow {

@@ -49,6 +49,5 @@ private struct NotchMouseRegionTests {
         window.setFrame(window.frame.offsetBy(dx: -1000, dy: 0), display: false)
         precondition(window.ignoresMouseEvents, "A layout change must release input without waiting for mouse movement")
         window.close()
-        print("NotchMouseRegionTests passed")
     }
 }
