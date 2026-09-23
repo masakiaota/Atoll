@@ -139,6 +139,11 @@ referenceimages
 PrivateWorks
 
 *.py
+!scripts/quiet.py
+!scripts/test.py
+!DynamicIslandTests/*Tests.py
+/.test-results/
+__pycache__/
 *.sh
 comparison_report.json
 *.txt

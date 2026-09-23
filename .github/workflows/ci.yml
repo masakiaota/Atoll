@@ -42,39 +42,40 @@ jobs:
       - name: Download Metal Toolchain
         # The downloadable Metal Toolchain is an Xcode 26+ (macOS 26) component; older Xcode ships metal.
         run: |
-          sudo xcodebuild -runFirstLaunch || true
+          python3 scripts/quiet.py -- sudo xcodebuild -runFirstLaunch || true
           MAJOR=$(sw_vers -productVersion | cut -d. -f1)
           if [ "$MAJOR" -ge 26 ]; then
             downloaded=false
             for i in 1 2 3 4 5; do
-              if sudo xcodebuild -downloadComponent MetalToolchain; then downloaded=true; break; fi
+              if python3 scripts/quiet.py -- sudo xcodebuild -downloadComponent MetalToolchain; then downloaded=true; break; fi
               sleep 10
             done
             if [ "$downloaded" = false ] && ! xcrun -f metal >/dev/null 2>&1; then
               echo "::error::Metal Toolchain download failed after 5 attempts and metal is unavailable."
               exit 1
             fi
-          else
-            echo "macOS $MAJOR: Metal ships with Xcode, skipping download."
           fi
+
+      - name: Unit tests
+        # AppKit rendering and XCUITest require a logged-in desktop; this group
+        # explicitly selects the headless tests rather than silently skipping UI.
+        run: python3 scripts/test.py unit
 
       - name: Build
         # UI automation of the notch/accessory app is not driveable on headless
         # GitHub-hosted runners, so CI compiles the app instead of running XCUITest.
         run: |
-          sudo DevToolsSecurity -enable
+          python3 scripts/quiet.py -- sudo DevToolsSecurity -enable
 
           # Strip mach-services entitlement (amfid kills ad-hoc app); ignore only "key absent".
           if ! plutil_out=$(plutil -remove com.apple.security.mach-services DynamicIsland/DynamicIsland.entitlements 2>&1); then
-            if printf '%s' "$plutil_out" | grep -q "No value to remove"; then
-              echo "mach-services entitlement already absent, continuing."
-            else
+            if ! printf '%s' "$plutil_out" | grep -q "No value to remove"; then
               echo "::error::plutil failed to modify entitlements: $plutil_out"
               exit 1
             fi
           fi
 
-          xcodebuild build \
+          python3 scripts/quiet.py -- xcodebuild build \
             -project DynamicIsland.xcodeproj \
             -scheme DynamicIsland \
             -destination "platform=macOS" \
@@ -84,19 +85,14 @@ jobs:
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES
 
-      - name: Surface Failure Diagnostics
-        if: failure()
-        run: |
-          echo "===== build failure summary ====="
-          xcrun xcresulttool get build-results --path BuildResults.xcresult 2>/dev/null \
-            || xcrun xcresulttool get --path BuildResults.xcresult --format json 2>/dev/null | head -c 20000 \
-            || echo "No xcresult available."
-
       - name: Upload Build Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-results-${{ matrix.macos_version }}
-          path: BuildResults.xcresult
+          path: |
+            BuildResults.xcresult
+            .test-results/
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

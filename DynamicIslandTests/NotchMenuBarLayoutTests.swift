@@ -57,7 +57,6 @@ private struct NotchMenuBarLayoutTests {
         let standardGreen = coloredColumns(standard, red: false)
         precondition(abs(standardGreen.min()! - standardRed.max()! - 201) <= 1,
                      "Displays without left-side layout must retain the original notch gap")
-        print("NotchMenuBarLayoutTests passed")
     }
 
     static func render<V: View>(_ content: V) -> NSBitmapImageRep {

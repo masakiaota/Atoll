@@ -30,5 +30,3 @@ expect(usage.acquire(for: shelf), "another owner can retry after rollback")
 expect(!usage.acquire(for: picker), "overlapping acquisition remains deduplicated")
 expect(!usage.release(for: shelf), "overlapping release preserves the newer owner")
 expect(usage.release(for: picker), "the newer owner can perform the final stop")
-
-print("LocalSendDiscoveryUsageTests passed")

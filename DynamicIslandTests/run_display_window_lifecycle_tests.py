@@ -7,11 +7,14 @@ without adding test-only routing or lifecycle hooks to production code.
 
 from pathlib import Path
 import re
-import subprocess
-import tempfile
+import os
+import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
+if __name__ == "__main__" and sys.argv[1:2] != ["--prepare"]:
+    os.execv(sys.executable, [sys.executable, str(ROOT / "scripts/test.py"), "display-lifecycle", *sys.argv[1:]])
+
 source = (ROOT / "DynamicIsland/DynamicIslandApp.swift").read_text()
 
 
@@ -46,16 +49,11 @@ for name in ["windows", "viewModels"]:
 
 fixture = (ROOT / "DynamicIslandTests/DisplayWindowLifecycleTests.swift").read_text()
 fixture = fixture.replace("// APP_DELEGATE_METHODS", "\n".join(fields + [method(n) for n in names]))
-with tempfile.TemporaryDirectory(prefix="atoll-display-tests-") as directory:
+def prepare_test(directory):
     directory = Path(directory)
     swift = directory / "DisplayWindowLifecycleTests.swift"
     swift.write_text(fixture)
-    executable = directory / "tests"
-    subprocess.run([
-        "xcrun", "swiftc",
-        str(ROOT / "DynamicIsland/extensions/NSScreen+DisplayID.swift"),
-        str(ROOT / "DynamicIsland/helpers/NotchMenuBarLayout.swift"),
-        str(ROOT / "DynamicIsland/components/Notch/DynamicIslandWindow.swift"),
-        str(swift), "-o", str(executable),
-    ], check=True)
-    subprocess.run([str(executable)], check=True)
+
+
+if __name__ == "__main__":
+    prepare_test(sys.argv[2])

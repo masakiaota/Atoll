@@ -50,7 +50,6 @@ private struct NotchSurfaceTests {
         state.selection = false
         flush()
         precondition(state.animationsDisabled, "Menu-bar retraction must stay immediate")
-        print("NotchSurfaceTests passed")
     }
 
     static func render(width: CGFloat, shape: AnyShape) -> NSBitmapImageRep {

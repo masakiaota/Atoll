@@ -116,7 +116,6 @@ private struct DisplayWindowLifecycleTests {
         testRestorationAfterRemoval()
         testRestorationAfterModeChange()
         testRestorationAfterTaskEndsOrScreenLocks()
-        print("DisplayWindowLifecycleTests passed (4 scenarios)")
     }
 
     static func screen(_ id: CGDirectDisplayID = 2, _ frame: CGRect = CGRect(x: 0, y: 0, width: 2560, height: 1080)) -> NSScreen {
