@@ -389,6 +389,10 @@ private actor SpotifyTrackMetadataResolver {
 
     private var cache: [String: CacheEntry] = [:]
 
+    /// Upper bound for cached artist lookups. Entries expire on their own, but a
+    /// long Spotify session can touch thousands of tracks, so prune on write.
+    private static let cacheLimit = 256
+
     func clearCache() {
         cache.removeAll()
     }
@@ -412,7 +416,22 @@ private actor SpotifyTrackMetadataResolver {
         let displayName = await fetchArtistDisplayName(for: trackURI, retryOnUnauthorized: true)
         let cacheLifetime: TimeInterval = displayName == nil ? 300 : 3600
         cache[trackURI] = CacheEntry(displayName: displayName, expiresAt: Date().addingTimeInterval(cacheLifetime))
+        pruneCache()
         return displayName
+    }
+
+    /// Drops expired entries and keeps the cache within `cacheLimit`, discarding
+    /// the entries that expire first.
+    private func pruneCache() {
+        let now = Date()
+        cache = cache.filter { $0.value.expiresAt > now }
+
+        guard cache.count > Self.cacheLimit else { return }
+
+        let keep = cache
+            .sorted { $0.value.expiresAt > $1.value.expiresAt }
+            .prefix(Self.cacheLimit)
+        cache = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
     }
 
     private func fetchArtistDisplayName(for trackURI: String, retryOnUnauthorized: Bool) async -> String? {
@@ -556,6 +575,10 @@ private actor SpotifyCanvasResolver {
 
     private var cache: [String: CacheEntry] = [:]
 
+    /// Upper bound for cached canvas lookups, pruned the same way as
+    /// `SpotifyTrackMetadataResolver`.
+    private static let cacheLimit = 256
+
     func canvasURL(for trackURI: String) async -> URL? {
         let now = Date()
         if let entry = cache[trackURI], entry.expiresAt > now {
@@ -565,7 +588,22 @@ private actor SpotifyCanvasResolver {
         let resolvedURL = await fetchCanvasURL(for: trackURI, retryOnUnauthorized: true)
         let cacheLifetime: TimeInterval = resolvedURL == nil ? 300 : 3600
         cache[trackURI] = CacheEntry(url: resolvedURL, expiresAt: now.addingTimeInterval(cacheLifetime))
+        pruneCache()
         return resolvedURL
+    }
+
+    /// Drops expired entries and keeps the cache within `cacheLimit`, discarding
+    /// the entries that expire first.
+    private func pruneCache() {
+        let now = Date()
+        cache = cache.filter { $0.value.expiresAt > now }
+
+        guard cache.count > Self.cacheLimit else { return }
+
+        let keep = cache
+            .sorted { $0.value.expiresAt > $1.value.expiresAt }
+            .prefix(Self.cacheLimit)
+        cache = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
     }
 
     private func fetchCanvasURL(for trackURI: String, retryOnUnauthorized: Bool) async -> URL? {
