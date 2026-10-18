@@ -54,8 +54,11 @@ python3 scripts/quiet.py --timeout 900 -- xcodebuild build \
 | `display-lifecycle` | 画面変更後の位置計算、破棄したウィンドウの再表示防止 |
 | `display-content` | 未操作画面での生成抑制、画面移動後のビュー解放、展開中の保持と再生成 |
 | `music-controls` | 非表示中の再表示、古いアニメーション完了後のパネル保持と解放 |
+| `artwork-processing` | 非表示中の画像処理抑制、表示時のPNG生成・保存、更新の集約と取消、必要な場合だけのぼかし生成 |
 | `ui` | `DynamicIslandUITests` に含まれるXCTest |
 
 新しい独立テストは `scripts/test.py` に登録し、環境要件に合うグループへ追加する。XCTestは既存のテストターゲットへ追加する。テスト本体はアサーションと失敗診断を保持し、成功通知や独自のログ抑制処理を追加しない。
 
 画面の回帰テストは、`AppDelegate` の対象メソッドと管理辞書をソースから抽出してコンパイルする。画面一覧の取得先と周辺サービスを置き換え、実際の `DynamicIslandWindow` の位置と表示状態を検証する。従来の `run_display_window_lifecycle_tests.py` も標準入口へ転送する。
+
+`artwork-processing` は管理クラスの購読・表示判定・PNG変換・保存処理を抽出して検証する。壁紙設定や動画再生などの周辺処理を置き換え、生成ファイルはテスト用の一時ディレクトリに保存する。

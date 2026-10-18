@@ -316,7 +316,7 @@ final class FullScreenArtworkWindowManager: ObservableObject {
     private var activeSongTitle: String?
     private var activeArtist: String?
     private var trackChangeCancellable: AnyCancellable?
-    private var artworkCacheCancellable: AnyCancellable?
+    private var artworkChangeCancellable: AnyCancellable?
     private var videoArtworkCancellable: AnyCancellable?
     private var playbackStateCancellable: AnyCancellable?
     private var hasSuspendedWallpaperAgent = false
@@ -350,7 +350,6 @@ final class FullScreenArtworkWindowManager: ObservableObject {
     private let spotifyCanvasFallbackHorizontalMargin: CGFloat = 48
 
     private init() {
-        observeArtworkChanges()
         observeVideoArtworkChanges()
         observePanelFrameChanges()
         observeArtworkLayoutOverCanvasPreference()
@@ -370,6 +369,8 @@ final class FullScreenArtworkWindowManager: ObservableObject {
             on: screen,
             backupWallpaperConfiguration: true
         )
+        guard isShowing else { return }
+        observeArtworkChanges()
         observeTrackChanges()
     }
 
@@ -377,6 +378,8 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         guard isShowing else { return }
         resumeWallpaperAgentIfNeeded()
         isShowing = false
+        artworkChangeCancellable?.cancel()
+        artworkChangeCancellable = nil
         isLiveWallpaperAllowed = false
         activeLiveWallpaperFingerprint = nil
         activeWallpaperKey = nil
@@ -412,27 +415,19 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         print("[FullScreenArtworkWindowManager] Original wallpaper restored")
     }
 
-    // MARK: - Artwork Pre-Cache
+    // MARK: - Visible Artwork Updates
 
     private func observeArtworkChanges() {
-        artworkCacheCancellable = MusicManager.shared.$albumArt
+        artworkChangeCancellable?.cancel()
+        artworkChangeCancellable = MusicManager.shared.$albumArt
+            // show() has already prepared the current image. Keep only an
+            // invalidation signal while debouncing, not another retained image.
+            .dropFirst()
+            .map { _ in () }
             .debounce(for: .milliseconds(180), scheduler: DispatchQueue.main)
-            .sink { [weak self] newArt in
-                guard let self else { return }
-                guard let fingerprint = self.imageFingerprint(for: newArt) else { return }
-                guard fingerprint != self.cachedArtworkFingerprint else { return }
-                let url = self.artworkCacheFileURL(for: fingerprint)
-                Task.detached(priority: .utility) {
-                    guard let pngData = self.encodeToPNG(newArt) else { return }
-                    try? pngData.write(to: url, options: .atomic)
-                    await MainActor.run {
-                        self.cachedArtworkPNG = url
-                        self.cachedArtworkFingerprint = fingerprint
-                        if self.isShowing {
-                            self.refreshPresentationForCurrentTrack()
-                        }
-                    }
-                }
+            .sink { [weak self] in
+                guard let self, self.isShowing else { return }
+                self.refreshPresentationForCurrentTrack()
             }
     }
 
@@ -537,7 +532,7 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         backupWallpaperConfiguration: Bool
     ) {
         let artworkID = "\(MusicManager.shared.songTitle)|\(MusicManager.shared.artistName)"
-        guard let artworkFingerprint = imageFingerprint(for: artwork) else { return }
+        guard let (rawArtworkFileURL, artworkFingerprint) = persistedArtworkFile(for: artwork) else { return }
         isLiveWallpaperAllowed = allowLiveWallpaper
         let shouldUseStaticFallbackWallpaper = shouldUseSpotifyStaticFallbackWallpaper(videoURL: videoURL)
         let shouldUseFallbackLayout = shouldUseSpotifyFallbackLayout(videoURL: videoURL)
@@ -545,15 +540,14 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         let overlayMode = artworkOverlayMode(shouldUseFallbackLayout: shouldUseFallbackLayout)
         let previousFallbackState = isShowingSpotifyCanvasFallback
 
-        guard let rawArtworkFileURL = persistedArtworkFileURL(for: artwork, fingerprint: artworkFingerprint) else { return }
         let expectCanvas = effectiveVideoURL != nil
-        let blurredFallbackURL = blurredWallpaperFileURL(for: artwork, fingerprint: artworkFingerprint, screen: screen) ?? rawArtworkFileURL
-        let wallpaperURL = (shouldUseStaticFallbackWallpaper || expectCanvas)
-            ? blurredFallbackURL
+        let usesBlurredWallpaper = shouldUseStaticFallbackWallpaper || expectCanvas
+        let wallpaperURL = usesBlurredWallpaper
+            ? (blurredWallpaperFileURL(for: artwork, fingerprint: artworkFingerprint, screen: screen) ?? rawArtworkFileURL)
             : rawArtworkFileURL
         let wallpaperKey = wallpaperIdentityKey(
             fingerprint: artworkFingerprint,
-            usesFallback: shouldUseStaticFallbackWallpaper || expectCanvas,
+            usesFallback: usesBlurredWallpaper,
             screen: screen
         )
         let desiredLiveWallpaperFingerprint = effectiveVideoURL?.absoluteString
@@ -569,7 +563,7 @@ final class FullScreenArtworkWindowManager: ObservableObject {
 
         if requiresWallpaperRefresh {
             if expectCanvas {
-                pendingFallbackStaticURL = blurredFallbackURL
+                pendingFallbackStaticURL = wallpaperURL
                 pendingFallbackWallpaperKey = wallpaperKey
                 activeWallpaperKey = nil
                 activeLiveWallpaperFingerprint = nil
@@ -726,24 +720,27 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         return min(preferred, maxByWidth, maxByHeight)
     }
 
-    private func persistedArtworkFileURL(for artwork: NSImage, fingerprint: String) -> URL? {
-        if let cached = cachedArtworkPNG,
-           cachedArtworkFingerprint == fingerprint,
-           FileManager.default.fileExists(atPath: cached.path) {
-            return cached
-        }
+    private func persistedArtworkFile(for artwork: NSImage) -> (url: URL, fingerprint: String)? {
+        // Use the same PNG for identity and persistence, and release conversion
+        // buffers before preparing a potentially screen-sized blurred wallpaper.
+        autoreleasepool {
+            guard let encoded = encodeToPNG(artwork) else { return nil }
+            let fingerprint = imageFingerprint(for: artwork, pngData: encoded)
+            if let cached = cachedArtworkPNG,
+               cachedArtworkFingerprint == fingerprint,
+               FileManager.default.fileExists(atPath: cached.path) {
+                return (cached, fingerprint)
+            }
 
-        guard let encoded = encodeToPNG(artwork) else { return nil }
-
-        let tempURL = artworkCacheFileURL(for: fingerprint)
-
-        do {
-            try encoded.write(to: tempURL, options: .atomic)
-            cachedArtworkPNG = tempURL
-            cachedArtworkFingerprint = fingerprint
-            return tempURL
-        } catch {
-            return nil
+            let tempURL = artworkCacheFileURL(for: fingerprint)
+            do {
+                try encoded.write(to: tempURL, options: .atomic)
+                cachedArtworkPNG = tempURL
+                cachedArtworkFingerprint = fingerprint
+                return (tempURL, fingerprint)
+            } catch {
+                return nil
+            }
         }
     }
 
@@ -819,8 +816,7 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         return bitmap.representation(using: .png, properties: [:])
     }
 
-    private nonisolated func imageFingerprint(for image: NSImage) -> String? {
-        guard let pngData = encodeToPNG(image) else { return nil }
+    private nonisolated func imageFingerprint(for image: NSImage, pngData: Data) -> String {
         var hasher = Hasher()
         hasher.combine(pngData)
         hasher.combine(Int(image.size.width.rounded()))
@@ -1799,7 +1795,7 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         deferredTrackRefreshTask?.cancel()
         deferredTrackRefreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(700))
-            guard let self, self.isShowing else { return }
+            guard !Task.isCancelled, let self, self.isShowing else { return }
             guard MusicManager.shared.songTitle == expectedTitle,
                   MusicManager.shared.artistName == expectedArtist
             else { return }
