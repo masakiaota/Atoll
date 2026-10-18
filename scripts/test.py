@@ -18,9 +18,10 @@ SWIFT_TESTS = {
     "display-lifecycle": ["DynamicIsland/extensions/NSScreen+DisplayID.swift", "DynamicIsland/helpers/NotchMenuBarLayout.swift", "DynamicIsland/components/Notch/DynamicIslandWindow.swift"],
     "display-content": ["DynamicIsland/components/Notch/DisplayContentHost.swift", "DynamicIslandTests/DisplayContentHostTests.swift"],
     "music-controls": ["DynamicIsland/managers/MusicControlWindowManager.swift", "DynamicIslandTests/MusicControlWindowManagerTests.swift"],
+    "artwork-processing": [],
 }
 UNIT = ["output", "hidden-edge", "localsend"]
-STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content", "music-controls"]
+STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content", "music-controls", "artwork-processing"]
 GROUPS = {"unit": UNIT, "standalone": STANDALONE, "all": STANDALONE + ["ui"]}
 
 
@@ -58,8 +59,12 @@ def main():
                 if suite == "music-controls":
                     commands.append([sys.executable, "DynamicIslandTests/run_music_control_window_tests.py", "--prepare", str(directory)])
                     sources[0] = directory / "MusicControlWindowManager.swift"
+                if suite == "artwork-processing":
+                    commands.append([sys.executable, "DynamicIslandTests/run_artwork_processing_tests.py", "--prepare", str(directory)])
+                    sources.append(directory / "ArtworkProcessingTests.swift")
                 executable = directory / suite
-                commands += [["xcrun", "swiftc", *map(str, sources), "-o", str(executable)], [str(executable)]]
+                swift_options = ["-parse-as-library"] if suite == "artwork-processing" else []
+                commands += [["xcrun", "swiftc", *swift_options, *map(str, sources), "-o", str(executable)], [str(executable)]]
             for command in commands:
                 code = run(command, label=f"{suite}: {Path(command[0]).name}", **options)
                 if code:
