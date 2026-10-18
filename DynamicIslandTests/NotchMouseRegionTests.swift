@@ -49,7 +49,12 @@ private struct NotchMouseRegionTests {
         window.setFrame(window.frame.offsetBy(dx: -1000, dy: 0), display: false)
         precondition(window.ignoresMouseEvents, "A layout change must release input without waiting for mouse movement")
 
-        guard let screen = window.screen else { fatalError("The panel must belong to a screen") }
+        guard let screen = NSScreen.screens.first else { fatalError("The test requires a screen") }
+        // The preceding input test deliberately moves the panel off the pointer
+        // and can leave it entirely offscreen. Restore a known screen first.
+        window.setFrameOrigin(CGPoint(x: screen.frame.midX - window.frame.width / 2,
+                                      y: screen.frame.midY - window.frame.height / 2))
+        precondition(window.screen === screen, "The panel must belong to the screen under test")
         var screenChanges: [Bool] = []
         window.onPointerScreenChange = { screenChanges.append($0) }
         let outside = CGPoint(x: screen.frame.minX - 100, y: screen.frame.minY - 100)

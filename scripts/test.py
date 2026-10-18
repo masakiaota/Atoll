@@ -17,9 +17,10 @@ SWIFT_TESTS = {
     "surface": ["DynamicIsland/components/Notch/NotchSurface.swift", "DynamicIsland/components/Notch/NotchShape.swift", "DynamicIslandTests/NotchSurfaceTests.swift"],
     "display-lifecycle": ["DynamicIsland/extensions/NSScreen+DisplayID.swift", "DynamicIsland/helpers/NotchMenuBarLayout.swift", "DynamicIsland/components/Notch/DynamicIslandWindow.swift"],
     "display-content": ["DynamicIsland/components/Notch/DisplayContentHost.swift", "DynamicIslandTests/DisplayContentHostTests.swift"],
+    "music-controls": ["DynamicIsland/managers/MusicControlWindowManager.swift", "DynamicIslandTests/MusicControlWindowManagerTests.swift"],
 }
 UNIT = ["output", "hidden-edge", "localsend"]
-STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content"]
+STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content", "music-controls"]
 GROUPS = {"unit": UNIT, "standalone": STANDALONE, "all": STANDALONE + ["ui"]}
 
 
@@ -54,6 +55,9 @@ def main():
                 if suite == "display-lifecycle":
                     commands.append([sys.executable, "DynamicIslandTests/run_display_window_lifecycle_tests.py", "--prepare", str(directory)])
                     sources.append(directory / "DisplayWindowLifecycleTests.swift")
+                if suite == "music-controls":
+                    commands.append([sys.executable, "DynamicIslandTests/run_music_control_window_tests.py", "--prepare", str(directory)])
+                    sources[0] = directory / "MusicControlWindowManager.swift"
                 executable = directory / suite
                 commands += [["xcrun", "swiftc", *map(str, sources), "-o", str(executable)], [str(executable)]]
             for command in commands:
