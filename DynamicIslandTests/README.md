@@ -52,6 +52,8 @@ python3 scripts/quiet.py --timeout 900 -- xcodebuild build \
 | `input` | 表示部分の入力、透明領域の透過、移動後の入力判定 |
 | `surface` | 背景の描画と表示切替、アニメーションの分離 |
 | `display-lifecycle` | 画面変更後の位置計算、破棄したウィンドウの再表示防止 |
+| `display-content` | 未操作画面での生成抑制、画面移動後のビュー解放、展開中の保持と再生成 |
+| `music-controls` | 非表示中の再表示、古いアニメーション完了後のパネル保持と解放 |
 | `ui` | `DynamicIslandUITests` に含まれるXCTest |
 
 新しい独立テストは `scripts/test.py` に登録し、環境要件に合うグループへ追加する。XCTestは既存のテストターゲットへ追加する。テスト本体はアサーションと失敗診断を保持し、成功通知や独自のログ抑制処理を追加しない。

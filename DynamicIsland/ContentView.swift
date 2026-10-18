@@ -574,6 +574,8 @@ struct ContentView: View {
             .padding(.horizontal, isIslandMode ? dynamicIslandShadowInset : 0)
             .padding(.bottom, isIslandMode ? dynamicIslandShadowInset : 0)
             .padding(.top, pillTopOffset)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Atoll")
             .accessibilityIdentifier("AtollNotch")
     }
 
@@ -641,14 +643,7 @@ struct ContentView: View {
                 : 0
             )
             .onChange(of: vm.notchState) { _, newState in
-                // Update smart monitoring based on notch state
-                if enableStatsFeature {
-                    let currentViewString = coordinator.currentView == .stats ? "stats" : "other"
-                    statsManager.updateMonitoringState(
-                        notchIsOpen: newState == .open,
-                        currentView: currentViewString
-                    )
-                }
+                syncStatsMonitoringState()
 
                 // Reset hover state when notch state changes
                 if newState == .closed && isHovering {
@@ -707,14 +702,8 @@ struct ContentView: View {
                     }
                 }
             }
-            .onChange(of: coordinator.currentView) { _, newValue in
-                if enableStatsFeature {
-                    let currentViewString = newValue == .stats ? "stats" : "other"
-                    statsManager.updateMonitoringState(
-                        notchIsOpen: vm.notchState == .open,
-                        currentView: currentViewString
-                    )
-                }
+            .onChange(of: coordinator.currentView) { _, _ in
+                syncStatsMonitoringState()
                 syncStickyTerminalOutsideClickMonitor()
             }
             .sensoryFeedback(.alignment, trigger: haptics)
@@ -794,6 +783,8 @@ struct ContentView: View {
     private func installPrimaryRootLifecycleHandlers<Content: View>(on view: Content) -> some View {
         view
             .onAppear {
+                syncStatsMonitoringState()
+                syncStickyTerminalOutsideClickMonitor()
                 isMusicControlWindowSuppressed = vm.notchState != .closed
                     || lockScreenManager.isLocked
                     || isMusicHUDDeferredAfterUnlock
@@ -2011,6 +2002,7 @@ struct ContentView: View {
     /// Cancels every long-lived task / event monitor this view owns. Called from
     /// `.onDisappear` and from `vm.onViewTeardown` on window close. Idempotent.
     private func performViewTeardown() {
+        syncStatsMonitoringState()
         hoverTask?.cancel()
         stopHoverClickMonitor()
         removeStickyTerminalClickMonitor()
@@ -2020,6 +2012,22 @@ struct ContentView: View {
         clearMusicControlVisibilityDeadline()
         musicControlSuppressionTask?.cancel()
         isHoveringClosedMusicWaveformControl = false
+    }
+
+    private func syncStatsMonitoringState() {
+        guard enableStatsFeature else { return }
+        // Another display can still have an open stats tab when this view is
+        // released. Restoring a view can also start directly in an open tab.
+        let isOpen: Bool
+        if showOnAllDisplays, let delegate = AppDelegate.shared {
+            isOpen = delegate.viewModels.values.contains { $0.notchState == .open }
+        } else {
+            isOpen = vm.notchState == .open
+        }
+        statsManager.updateMonitoringState(
+            notchIsOpen: isOpen,
+            currentView: coordinator.currentView == .stats ? "stats" : "other"
+        )
     }
 
     private func startHoverClickMonitor() {

@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 
 final class DynamicIslandUITests: XCTestCase {
 
@@ -51,6 +52,38 @@ final class DynamicIslandUITests: XCTestCase {
             1,
             "Repeated display reconciliation should leave exactly one notch."
         )
+    }
+
+    func testInactiveDisplaysRestoreContentOnPointerEntry() throws {
+        app.terminate()
+        // Typed argument-domain defaults do not change the user's stored settings.
+        app.launchArguments = [
+            "--uitesting",
+            "--uitesting-force-all-displays",
+        ]
+        app.launch()
+
+        let notches = app.descendants(matching: .any).matching(identifier: "AtollNotch")
+        let inactive = app.descendants(matching: .any).matching(identifier: "AtollInactiveNotch")
+        let displayCount = NSScreen.screens.count
+        func waitForDisplayCounts() {
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                notches.count == 1 && inactive.count == displayCount - 1
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 15), .completed,
+                           "Expected 1 normal / \(displayCount - 1) inactive; got \(notches.count) / \(inactive.count)")
+        }
+        waitForDisplayCounts()
+        for _ in 0..<(displayCount - 1) {
+            let target = inactive.firstMatch
+            let targetFrame = target.frame
+            // The native panel passes mouse events through until the pointer
+            // reaches its surface, so element-level hit testing rejects hover.
+            target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).hover()
+            waitForDisplayCounts()
+            XCTAssertTrue(notches.firstMatch.frame.intersects(targetFrame),
+                          "Entering an inactive display should restore its normal content")
+        }
     }
 
     func testSystemHUDObservationRequiresAnEnabledStyleAndControl() {

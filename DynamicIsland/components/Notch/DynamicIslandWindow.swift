@@ -24,6 +24,9 @@ import Cocoa
 import SwiftUI
 
 class DynamicIslandWindow: NSPanel {
+    var onPointerScreenChange: ((Bool) -> Void)?
+    private var isPointerOnScreen: Bool?
+
     weak var mouseRegion: NotchMouseRegionView? {
         didSet { updateMouseEventPassthrough() }
     }
@@ -98,7 +101,16 @@ class DynamicIslandWindow: NSPanel {
         }
     }
 
-    func updateMouseEventPassthrough() {
+    func updateMouseEventPassthrough(at location: NSPoint = NSEvent.mouseLocation) {
+        // Reuse the existing native mouse monitors instead of adding a timer
+        // or one more pair of global/local monitors per display.
+        if onPointerScreenChange != nil, let screen {
+            let containsPointer = screen.frame.contains(location)
+            if isPointerOnScreen != containsPointer {
+                isPointerOnScreen = containsPointer
+                onPointerScreenChange?(containsPointer)
+            }
+        }
         if suppressMouseEvents {
             mouseDownInNotch = false
             ignoresMouseEvents = true
@@ -106,7 +118,7 @@ class DynamicIslandWindow: NSPanel {
         }
         // Keep receiving an in-progress drag that began inside Atoll.
         if mouseDownInNotch { return }
-        ignoresMouseEvents = !(mouseRegion?.containsScreenPoint(NSEvent.mouseLocation) ?? false)
+        ignoresMouseEvents = !(mouseRegion?.containsScreenPoint(location) ?? false)
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
@@ -116,6 +128,7 @@ class DynamicIslandWindow: NSPanel {
     }
 
     override func close() {
+        onPointerScreenChange = nil
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         localMouseMonitor = nil

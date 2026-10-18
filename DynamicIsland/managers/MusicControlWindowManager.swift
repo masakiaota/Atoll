@@ -38,6 +38,8 @@ final class MusicControlWindowManager {
     private var hostingView: NSHostingView<MusicControlOverlay>?
     private var hasDelegated = false
     private var lastMetrics: MusicControlWindowMetrics?
+    private var animationGeneration: UInt = 0
+    private var isHiding = false
 
     private init() {}
 
@@ -48,6 +50,12 @@ final class MusicControlWindowManager {
             hide()
             return false
         }
+
+        // A display handoff can present again before the previous hide finishes.
+        // Only the latest request may finalize the panel's frame or resources.
+        animationGeneration &+= 1
+        let generation = animationGeneration
+        isHiding = false
 
         let overlay = MusicControlOverlay(
             notchHeight: metrics.notchHeight,
@@ -81,7 +89,8 @@ final class MusicControlWindowManager {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 window.animator().setFrame(targetFrame, display: true)
                 window.animator().alphaValue = 1
-            } completionHandler: {
+            } completionHandler: { [weak self] in
+                guard let self, self.animationGeneration == generation, self.window === window else { return }
                 window.setFrame(targetFrame, display: false)
             }
         } else {
@@ -89,7 +98,8 @@ final class MusicControlWindowManager {
                 context.duration = 0.16
                 context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 window.animator().setFrame(targetFrame, display: true)
-            } completionHandler: {
+            } completionHandler: { [weak self] in
+                guard let self, self.animationGeneration == generation, self.window === window else { return }
                 window.setFrame(targetFrame, display: false)
             }
             window.orderFrontRegardless()
@@ -101,11 +111,11 @@ final class MusicControlWindowManager {
 
     @discardableResult
     func refresh(using viewModel: DynamicIslandViewModel, metrics: MusicControlWindowMetrics) -> Bool {
-        guard window != nil else {
+        guard let window else {
             return present(using: viewModel, metrics: metrics)
         }
 
-        if let lastMetrics, lastMetrics == metrics {
+        if !isHiding, window.isVisible, let lastMetrics, lastMetrics == metrics {
             return true
         }
 
@@ -114,8 +124,11 @@ final class MusicControlWindowManager {
 
     func hide(animated: Bool = true, tearDown: Bool = true) {
         guard let window else { return }
+        animationGeneration &+= 1
+        let generation = animationGeneration
 
         guard animated, window.alphaValue > 0.01 else {
+            isHiding = false
             window.orderOut(nil)
             window.alphaValue = 0
             if tearDown {
@@ -126,6 +139,7 @@ final class MusicControlWindowManager {
 
         let retreatFrame = notchRetreatFrame(from: window.frame)
         let originalFrame = window.frame
+        isHiding = true
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
@@ -133,11 +147,13 @@ final class MusicControlWindowManager {
             window.animator().setFrame(retreatFrame, display: true)
             window.animator().alphaValue = 0
         } completionHandler: { [weak self] in
+            guard let self, self.animationGeneration == generation, self.window === window else { return }
+            self.isHiding = false
             window.setFrame(originalFrame, display: false)
             window.orderOut(nil)
             window.alphaValue = 0
             if tearDown {
-                self?.tearDownWindowResources(using: window)
+                self.tearDownWindowResources(using: window)
             }
         }
     }
