@@ -80,8 +80,8 @@ final class SystemTimerBridge {
     private var latestUpdateTimestamp: Date?
 
     private var logProcess: Process?
-    private var logPipe: Pipe?
-    private var logBuffer = Data()
+    private var logReader: SystemTimerLogReader?
+    private var logBuffer = SystemTimerLogLineBuffer()
     private var logRestartWorkItem: DispatchWorkItem?
     private var logPreferredName: String?
     private var logPreferredDuration: TimeInterval?
@@ -100,10 +100,8 @@ final class SystemTimerBridge {
     private var mainDispatchScheduled = false
     private var lastMainDispatch: Date?
     private let minMainDispatchInterval: TimeInterval = 0.25
-    private let maxLogBufferBytes = 1_048_576 // 1 MB; drop backlog beyond this
 
     private var menuExtra: AXUIElement?
-    private var fileDescriptor: CInt = -1
     private var fileMonitor: DispatchSourceFileSystemObject?
     private var ticker: DispatchSourceTimer?
     private var defaultsCancellable: AnyCancellable?
@@ -143,6 +141,7 @@ final class SystemTimerBridge {
     private func startIfNeeded() {
         queue.async { [weak self] in
             guard let self else { return }
+            guard Defaults[.mirrorSystemTimer] else { return }
             guard !self.isMonitoring else { return }
             self.logInfo("Starting monitoring pipeline")
 
@@ -186,11 +185,6 @@ final class SystemTimerBridge {
             self.fileMonitor?.cancel()
             self.fileMonitor = nil
 
-            if self.fileDescriptor != -1 {
-                close(self.fileDescriptor)
-                self.fileDescriptor = -1
-            }
-
             self.menuExtra = nil
             self.initialTotalDuration = nil
             self.metadata = nil
@@ -227,6 +221,7 @@ final class SystemTimerBridge {
 
     @discardableResult
     private func startLogStream() -> Bool {
+        guard Defaults[.mirrorSystemTimer] else { return false }
         if let process = logProcess, process.isRunning {
             return true
         }
@@ -249,36 +244,46 @@ final class SystemTimerBridge {
 
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
-        logBuffer.removeAll(keepingCapacity: false)
+        logBuffer.reset()
         nonJSONLogLineCount = 0
-        logPipe = outputPipe
 
-        outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
+        process.terminationHandler = { [weak self] terminatedProcess in
             self?.queue.async { [weak self] in
-                self?.consumeLogData(data)
-            }
-        }
-
-        process.terminationHandler = { [weak self] _ in
-            self?.queue.async { [weak self] in
-                self?.handleLogStreamTermination()
+                self?.handleLogStreamTermination(terminatedProcess)
             }
         }
 
         do {
+            logReader = try SystemTimerLogReader(
+                handle: outputPipe.fileHandleForReading,
+                queue: queue,
+                onData: { [weak self, weak process] data in
+                    guard let self, let process, self.logProcess === process else { return }
+                    self.consumeLogData(data)
+                },
+                onFailure: { [weak self, weak process] error in
+                    guard let self, let process, self.logProcess === process else { return }
+                    self.logError("Log stream read failed (errno: \(error))")
+                    self.stopLogStream()
+                    self.scheduleLogStreamRestart()
+                }
+            )
             try process.run()
             logProcess = process
             logInfo("Log stream started (pid: \(process.processIdentifier))")
             return true
         } catch {
             logError("Failed to start log stream: \(error.localizedDescription)")
-            outputPipe.fileHandleForReading.readabilityHandler = nil
-            outputPipe.fileHandleForReading.closeFile()
-            logPipe = nil
+            process.terminationHandler = nil
+            if let logReader {
+                logReader.cancel()
+            } else {
+                try? outputPipe.fileHandleForReading.close()
+            }
+            logReader = nil
+            try? outputPipe.fileHandleForWriting.close()
             return false
         }
     }
@@ -287,29 +292,29 @@ final class SystemTimerBridge {
         logRestartWorkItem?.cancel()
         logRestartWorkItem = nil
 
-        logPipe?.fileHandleForReading.readabilityHandler = nil
-        logPipe?.fileHandleForReading.closeFile()
-        logPipe = nil
+        logReader?.cancel()
+        logReader = nil
 
         if let process = logProcess {
             process.terminationHandler = nil
             if process.isRunning {
                 process.terminate()
-                process.waitUntilExit()
-                logInfo("Log stream terminated (pid: \(process.processIdentifier))")
+                // Let the queue return so the reader's cancellation handler can
+                // close stdout, even if the child was blocked writing to its pipe.
+                logInfo("Requested log stream termination (pid: \(process.processIdentifier))")
             }
         }
 
         logProcess = nil
-        logBuffer.removeAll(keepingCapacity: false)
+        logBuffer.reset()
     }
 
-    private func handleLogStreamTermination() {
-        logPipe?.fileHandleForReading.readabilityHandler = nil
-        logPipe?.fileHandleForReading.closeFile()
-        logPipe = nil
+    private func handleLogStreamTermination(_ process: Process) {
+        guard logProcess === process else { return }
+        logReader?.finish()
+        logReader = nil
         logProcess = nil
-        logBuffer.removeAll(keepingCapacity: false)
+        logBuffer.reset()
         logError("Log stream exited unexpectedly; scheduling restart")
 
         guard Defaults[.mirrorSystemTimer] else { return }
@@ -323,10 +328,13 @@ final class SystemTimerBridge {
 
     private func scheduleLogStreamRestart() {
         logRestartWorkItem?.cancel()
+        logRestartWorkItem = nil
+        guard Defaults[.mirrorSystemTimer] else { return }
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.logRestartWorkItem = nil
+            guard Defaults[.mirrorSystemTimer] else { return }
             let started = self.startLogStream()
             if !started, AXIsProcessTrusted(), self.ticker == nil {
                 self.setupTicker()
@@ -339,21 +347,8 @@ final class SystemTimerBridge {
     }
 
     private func consumeLogData(_ data: Data) {
-        logBuffer.append(data)
-
-        // Drop backlog if the stream outpaces parsing; prevents unbounded growth during a storm.
-        if logBuffer.count > maxLogBufferBytes {
-            logError("Log buffer exceeded \(maxLogBufferBytes) bytes; dropping backlog to protect the run loop")
-            logBuffer.removeAll(keepingCapacity: false)
-            return
-        }
-
-        while let newlineIndex = logBuffer.firstIndex(of: UInt8(10)) {
-            let lineData = Data(logBuffer[..<newlineIndex])
-            let removalIndex = logBuffer.index(after: newlineIndex)
-            logBuffer.removeSubrange(..<removalIndex)
-            guard !lineData.isEmpty else { continue }
-            processLogLine(lineData)
+        logBuffer.append(data) { [self] line in
+            processLogLine(line)
         }
     }
 
@@ -388,7 +383,6 @@ final class SystemTimerBridge {
             return
         }
 
-        fileDescriptor = fd
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .extend, .attrib, .rename],
@@ -399,11 +393,9 @@ final class SystemTimerBridge {
             self?.refreshMetadata()
         }
 
-        source.setCancelHandler { [weak self] in
-            guard let fd = self?.fileDescriptor, fd != -1 else { return }
-            close(fd)
-            self?.fileDescriptor = -1
-        }
+        // The cancellation callback can run after a new monitor has started.
+        // Close only the descriptor owned by this source.
+        source.setCancelHandler { close(fd) }
 
         source.resume()
         fileMonitor = source

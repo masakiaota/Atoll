@@ -12,6 +12,7 @@ from quiet import ROOT, positive_seconds, run
 SWIFT_TESTS = {
     "hidden-edge": ["DynamicIsland/helpers/HiddenEdgeHoverPollingState.swift", "DynamicIslandTests/HiddenEdgeHoverPollingStateTests.swift"],
     "localsend": ["DynamicIsland/components/Shelf/Services/LocalSendDiscoveryUsage.swift", "Tests/LocalSendDiscoveryUsage/main.swift"],
+    "system-timer": ["DynamicIsland/helpers/SystemTimerLogReader.swift"],
     "layout": ["DynamicIsland/helpers/NotchMenuBarLayout.swift", "DynamicIslandTests/NotchMenuBarLayoutTests.swift"],
     "input": ["DynamicIsland/components/Notch/DynamicIslandWindow.swift", "DynamicIslandTests/NotchMouseRegionTests.swift"],
     "surface": ["DynamicIsland/components/Notch/NotchSurface.swift", "DynamicIsland/components/Notch/NotchShape.swift", "DynamicIslandTests/NotchSurfaceTests.swift"],
@@ -20,7 +21,7 @@ SWIFT_TESTS = {
     "music-controls": ["DynamicIsland/managers/MusicControlWindowManager.swift", "DynamicIslandTests/MusicControlWindowManagerTests.swift"],
     "artwork-processing": [],
 }
-UNIT = ["output", "hidden-edge", "localsend"]
+UNIT = ["output", "hidden-edge", "localsend", "system-timer"]
 STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content", "music-controls", "artwork-processing"]
 GROUPS = {"unit": UNIT, "standalone": STANDALONE, "all": STANDALONE + ["ui"]}
 
@@ -62,6 +63,9 @@ def main():
                 if suite == "artwork-processing":
                     commands.append([sys.executable, "DynamicIslandTests/run_artwork_processing_tests.py", "--prepare", str(directory)])
                     sources.append(directory / "ArtworkProcessingTests.swift")
+                if suite == "system-timer":
+                    commands.append([sys.executable, "DynamicIslandTests/run_system_timer_tests.py", "--prepare", str(directory)])
+                    sources.append(directory / "SystemTimerTests.swift")
                 executable = directory / suite
                 swift_options = ["-parse-as-library"] if suite == "artwork-processing" else []
                 commands += [["xcrun", "swiftc", *swift_options, *map(str, sources), "-o", str(executable)], [str(executable)]]

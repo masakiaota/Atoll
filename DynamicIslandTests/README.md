@@ -48,6 +48,7 @@ python3 scripts/quiet.py --timeout 900 -- xcodebuild build \
 | `output` | 無出力での成功、診断の上限、完全ログ、終了コード、中断、タイムアウト |
 | `hidden-edge` | 画面状態に応じた端ホバー監視の開始と停止 |
 | `localsend` | LocalSend検出処理の利用者数と開始、停止 |
+| `system-timer` | 時計連携の既定無効、明示的な有効化、受信量の制限、巨大行の破棄、停止・再起動と資源解放 |
 | `layout` | ノッチ左側への配置、幅不足時の退避、中央での展開 |
 | `input` | 表示部分の入力、透明領域の透過、移動後の入力判定 |
 | `surface` | 背景の描画と表示切替、アニメーションの分離 |
@@ -62,3 +63,5 @@ python3 scripts/quiet.py --timeout 900 -- xcodebuild build \
 画面の回帰テストは、`AppDelegate` の対象メソッドと管理辞書をソースから抽出してコンパイルする。画面一覧の取得先と周辺サービスを置き換え、実際の `DynamicIslandWindow` の位置と表示状態を検証する。従来の `run_display_window_lifecycle_tests.py` も標準入口へ転送する。
 
 `artwork-processing` は管理クラスの購読・表示判定・PNG変換・保存処理を抽出して検証する。壁紙設定や動画再生などの周辺処理を置き換え、生成ファイルはテスト用の一時ディレクトリに保存する。
+
+`system-timer` は実際のパイプと読み取り処理を使い、解析が遅い場合の受信抑制とファイル記述子の解放を検証する。管理クラスの開始・停止処理は抽出し、子プロセスと設定を置き換える。macOSの時計や利用者の設定は変更しない。

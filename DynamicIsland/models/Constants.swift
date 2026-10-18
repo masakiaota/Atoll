@@ -1138,7 +1138,7 @@ extension Defaults.Keys {
     static let timerShowsLabel = Key<Bool>("timerShowsLabel", default: false)
     static let timerShowsProgress = Key<Bool>("timerShowsProgress", default: true)
     static let timerProgressStyle = Key<TimerProgressStyle>("timerProgressStyle", default: .bar)
-    static let mirrorSystemTimer = Key<Bool>("mirrorSystemTimer", default: true)
+    static let mirrorSystemTimer = Key<Bool>("mirrorSystemTimer", default: false)
     static let timerInputStyle = Key<TimerInputStyle>("timerInputStyle", default: .manual)
     
     
