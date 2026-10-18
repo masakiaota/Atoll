@@ -47,6 +47,15 @@ enum AppRuntimeEnvironment {
         #endif
     }()
 
+    static let forcesAllDisplaysForUITesting: Bool = {
+        #if DEBUG
+        return isUITesting
+            && CommandLine.arguments.contains("--uitesting-force-all-displays")
+        #else
+        return false
+        #endif
+    }()
+
     /// Exercises reconciliation repeatedly after the initial panel is visible.
     static let repeatsDisplayModeReconciliationForUITesting: Bool = {
         #if DEBUG

@@ -400,12 +400,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.animationBehavior = .none
         // collectionBehavior is configured in DynamicIslandWindow.init
 
-        window.contentView = FirstMouseHostingView(
-            rootView: ContentView()
-                .environmentObject(viewModel)
-                .environmentObject(webcamManager)
-                //.moveToSky()
-        )
+        // Resolve window.screen before attaching a hosting view: its native
+        // mouse region can immediately report which screen contains the pointer.
+        positionWindow(window, on: screen, changeAlpha: false)
+
+        let makeContent = { [webcamManager] in
+            FirstMouseHostingView(
+                rootView: ContentView()
+                    .environmentObject(viewModel)
+                    .environmentObject(webcamManager)
+            )
+        }
+        if Defaults[.showOnAllDisplays] {
+            let host = DisplayContentHost(
+                isPointerOnScreen: screen.frame.contains(NSEvent.mouseLocation),
+                isNotchOpen: viewModel.notchState == .open,
+                makeContent: makeContent,
+                makePlaceholder: {
+                    FirstMouseHostingView(rootView: InactiveDisplayNotchView(vm: viewModel))
+                },
+                releaseContent: {
+                    viewModel.onViewTeardown?()
+                    viewModel.onViewTeardown = nil
+                }
+            )
+            window.onPointerScreenChange = { [weak window, weak host] containsPointer in
+                // Native mouse-region registration can call back during layout.
+                // Replace the hosting graph after that traversal has finished.
+                DispatchQueue.main.async { [weak window, weak host] in
+                    guard let host, window?.contentView === host else { return }
+                    host.isPointerOnScreen = containsPointer
+                }
+            }
+            viewModel.$notchState
+                .removeDuplicates()
+                // @Published emits before the property changes. Lifecycle
+                // handlers must see the new state when rebuilding/tearing down.
+                .receive(on: RunLoop.main)
+                .sink { [weak window, weak host] state in
+                    guard let host, window?.contentView === host else { return }
+                    host.isNotchOpen = state == .open
+                }
+                .store(in: &host.cancellables)
+            window.contentView = host
+        } else {
+            window.contentView = makeContent()
+        }
         
         //SkyLightOperator.shared.delegateWindow(window)
         return window
@@ -624,8 +664,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if AppRuntimeEnvironment.forcesSingleDisplayForUITesting {
-            Defaults[.showOnAllDisplays] = false
+        if AppRuntimeEnvironment.forcesSingleDisplayForUITesting || AppRuntimeEnvironment.forcesAllDisplaysForUITesting {
+            // Defaults decodes Bool objects, not the strings supplied by `-key
+            // YES`. Use typed, process-local overrides without persisting them.
+            var arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+            arguments[Defaults.Keys.showOnAllDisplays.name] = AppRuntimeEnvironment.forcesAllDisplaysForUITesting
+            if AppRuntimeEnvironment.forcesAllDisplaysForUITesting {
+                arguments[Defaults.Keys.hideNonNotchUntilHover.name] = false
+                arguments[Defaults.Keys.enableFullscreenMediaDetection.name] = false
+                arguments[Defaults.Keys.openNotchOnHover.name] = false
+            }
+            UserDefaults.standard.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
         }
 
         let userInfo: [String: Any] = [

@@ -48,6 +48,21 @@ private struct NotchMouseRegionTests {
         precondition(!window.ignoresMouseEvents, "Input must recover after menu overflow closes")
         window.setFrame(window.frame.offsetBy(dx: -1000, dy: 0), display: false)
         precondition(window.ignoresMouseEvents, "A layout change must release input without waiting for mouse movement")
+
+        guard let screen = window.screen else { fatalError("The panel must belong to a screen") }
+        var screenChanges: [Bool] = []
+        window.onPointerScreenChange = { screenChanges.append($0) }
+        let outside = CGPoint(x: screen.frame.minX - 100, y: screen.frame.minY - 100)
+        let insideScreen = CGPoint(x: screen.frame.midX, y: screen.frame.midY)
+        window.updateMouseEventPassthrough(at: outside)
+        screenChanges.removeAll()
+        window.updateMouseEventPassthrough(at: insideScreen)
+        window.updateMouseEventPassthrough(at: insideScreen)
+        window.updateMouseEventPassthrough(at: outside)
+        precondition(screenChanges == [true, false],
+                     "Screen entry and exit must notify once, without rebuilding for every mouse move")
         window.close()
+        window.updateMouseEventPassthrough(at: insideScreen)
+        precondition(screenChanges == [true, false], "Closed windows must not reactivate their content")
     }
 }

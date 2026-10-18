@@ -16,9 +16,10 @@ SWIFT_TESTS = {
     "input": ["DynamicIsland/components/Notch/DynamicIslandWindow.swift", "DynamicIslandTests/NotchMouseRegionTests.swift"],
     "surface": ["DynamicIsland/components/Notch/NotchSurface.swift", "DynamicIsland/components/Notch/NotchShape.swift", "DynamicIslandTests/NotchSurfaceTests.swift"],
     "display-lifecycle": ["DynamicIsland/extensions/NSScreen+DisplayID.swift", "DynamicIsland/helpers/NotchMenuBarLayout.swift", "DynamicIsland/components/Notch/DynamicIslandWindow.swift"],
+    "display-content": ["DynamicIsland/components/Notch/DisplayContentHost.swift", "DynamicIslandTests/DisplayContentHostTests.swift"],
 }
 UNIT = ["output", "hidden-edge", "localsend"]
-STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle"]
+STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content"]
 GROUPS = {"unit": UNIT, "standalone": STANDALONE, "all": STANDALONE + ["ui"]}
 
 
