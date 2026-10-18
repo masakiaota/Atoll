@@ -39,7 +39,9 @@ public final class ImageService: ImageServiceProtocol {
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
         let artworkCachePath = cacheDir.appendingPathComponent("artwork_cache").path
         
-        let cache = URLCache(memoryCapacity: 50 * 1024 * 1024, // 50MB
+        // Artwork responses are small, so keep the in-memory representation
+        // modest; repeated lookups are still served from the disk cache below.
+        let cache = URLCache(memoryCapacity: 8 * 1024 * 1024, // 8MB
                              diskCapacity: 100 * 1024 * 1024, // 100MB
                              diskPath: artworkCachePath)
         config.urlCache = cache
