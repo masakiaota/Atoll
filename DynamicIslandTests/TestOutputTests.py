@@ -68,7 +68,7 @@ class TestOutputTests(unittest.TestCase):
         pid_file = Path(self.directory.name) / "child-pid"
         child = f"import os,time,pathlib; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(20)"
         result = self.invoke(f"import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', {child!r}]); time.sleep(20)", "--timeout", "1")
-        self.assertEqual(result.returncode, 124)
+        self.assertEqual(result.returncode, 124, result.stderr.decode("utf-8", errors="replace"))
         self.assertIn(b"Timed out", result.stderr)
         self.assertTrue(pid_file.exists(), "The descendant must have started before the timeout")
         status = subprocess.run(["ps", "-p", pid_file.read_text(), "-o", "stat="], capture_output=True, text=True)
