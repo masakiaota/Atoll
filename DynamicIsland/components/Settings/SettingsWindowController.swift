@@ -38,7 +38,7 @@ class SettingsWindowController: NSWindowController {
         
         super.init(window: window)
         
-        setupWindow()
+        configureWindow()
     }
     
     required init?(coder: NSCoder) {
@@ -47,11 +47,16 @@ class SettingsWindowController: NSWindowController {
     
     func setUpdaterController(_ controller: SPUStandardUpdaterController) {
         self.updaterController = controller
-        // Recreate the content view with the proper updater controller
-        setupWindow()
+        // The content view is built lazily in `showWindow()`. Drop the view that
+        // may have been built before the updater controller was available so the
+        // next presentation embeds the configured updater.
+        configureWindow()
+        releaseContentView()
     }
     
-    private func setupWindow() {
+    /// Applies the static window configuration. This is cheap and idempotent, so
+    /// it can run at launch without instantiating the settings scene graph.
+    private func configureWindow() {
         guard let window = window else { return }
         
         window.title = "Atoll Settings"
@@ -72,21 +77,31 @@ class SettingsWindowController: NSWindowController {
         window.isRestorable = true
         window.identifier = NSUserInterfaceItemIdentifier("DynamicIslandSettingsWindow")
         
-        // Create the SwiftUI content
-        let settingsView = SettingsView(updaterController: updaterController)
-        let hostingView = NSHostingView(rootView: settingsView)
-        window.contentView = hostingView
-        
         // Handle window closing
         window.delegate = self
         
         ScreenCaptureVisibilityManager.shared.register(window, scope: .panelsOnly)
     }
     
+    /// Builds the SwiftUI settings view on demand. `SettingsView` instantiates the
+    /// whole settings scene graph, so it is created only while the window is on
+    /// screen and torn down again in `releaseContentView()`.
+    private func installContentViewIfNeeded() {
+        guard let window = window, window.contentView == nil else { return }
+        
+        let settingsView = SettingsView(updaterController: updaterController)
+        window.contentView = NSHostingView(rootView: settingsView)
+    }
+    
+    /// Drops the SwiftUI hosting view so the settings scene graph is not kept
+    /// resident while the window is closed.
+    private func releaseContentView() {
+        window?.contentView = nil
+    }
+    
     func showWindow() {
-        // Ensure window exists
-        _ = window
-
+        installContentViewIfNeeded()
+        
         // Reassert regular window semantics in case any prior state mutated this window.
         window?.level = .normal
         window?.collectionBehavior = [.managed, .participatesInCycle]
@@ -120,6 +135,7 @@ class SettingsWindowController: NSWindowController {
     
     private func relinquishFocus() {
         window?.orderOut(nil)
+        releaseContentView()
         
         // Set app back to accessory mode immediately
         NSApp.setActivationPolicy(.accessory)
