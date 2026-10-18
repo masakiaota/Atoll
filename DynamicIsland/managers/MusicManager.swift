@@ -538,6 +538,10 @@ class MusicManager: ObservableObject {
 
     private(set) var artworkData: Data? = nil
 
+    /// Set when the decoded artwork is dropped while nothing displays it, so the
+    /// next playback update can re-decode it (see `releaseIdleArtwork()`).
+    private var needsArtworkRestore = false
+
     @Published var videoArtworkURL: URL? = nil
 
     private var liveStreamUnknownDurationCount: Int = 0
@@ -798,6 +802,7 @@ class MusicManager: ObservableObject {
                 // Try to use app icon if no artwork but track changed
                 if let appIconImage = AppIconAsNSImage(for: state.bundleIdentifier) {
                     self.usingAppIconForArtwork = true
+                    self.needsArtworkRestore = false
                     self.updateAlbumArt(newAlbumArt: appIconImage)
                 }
             }
@@ -827,6 +832,13 @@ class MusicManager: ObservableObject {
             }
         } else if state.isExplicit != nil {
             self.refreshExplicitFlag(for: state)
+        }
+
+        // Re-decode the artwork if the bitmap was dropped while idle. This covers
+        // both a resumed session and a metadata change that leaves the artwork
+        // untouched, without replaying the track-change animation.
+        if self.needsArtworkRestore, !self.usingAppIconForArtwork, let artwork = state.artwork {
+            self.updateArtwork(artwork)
         }
 
         let timeChanged = state.currentTime != self.elapsedTime
@@ -863,6 +875,9 @@ class MusicManager: ObservableObject {
         
         updateLiveStreamState(with: state)
         self.timestampDate = state.lastUpdated
+
+        // Release the decoded artwork as soon as nothing can display it.
+        releaseIdleArtwork()
 
         // Manage lyric sync task based on playback/lyrics availability
         if Defaults[.enableLyrics] && !self.syncedLyrics.isEmpty {
@@ -1076,6 +1091,8 @@ class MusicManager: ObservableObject {
     }
 
     private func updateArtwork(_ artworkData: Data) {
+        needsArtworkRestore = false
+        
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
@@ -1100,8 +1117,21 @@ class MusicManager: ObservableObject {
                 withAnimation {
                     self.isPlayerIdle = !self.isPlaying
                 }
+                self.releaseIdleArtwork()
             }
         }
+    }
+
+    /// Drops the decoded artwork bitmap once no music UI can display it, that is
+    /// while the player is idle and no real track metadata is available. The
+    /// compressed `artworkData` is kept as the change-detection baseline, so the
+    /// bitmap is re-decoded by the next playback update when a session starts.
+    private func releaseIdleArtwork() {
+        guard isPlayerIdle, !hasActiveSession, !usingAppIconForArtwork else { return }
+        guard albumArt !== defaultImage else { return }
+
+        needsArtworkRestore = true
+        albumArt = defaultImage
     }
 
     private var workItem: DispatchWorkItem?
