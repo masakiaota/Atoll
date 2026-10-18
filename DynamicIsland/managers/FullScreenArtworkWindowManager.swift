@@ -130,6 +130,12 @@ private final class WallpaperTransitionImageView: NSView {
     func updateImage(_ image: NSImage) {
         imageLayer.contents = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
+
+    /// Releases the decoded wallpaper bitmap. The layer would otherwise keep the
+    /// full-screen image alive while the transition window is hidden.
+    func clearImage() {
+        imageLayer.contents = nil
+    }
 }
 
 private final class SpotifyCanvasFallbackArtworkOverlayView: NSView {
@@ -1499,6 +1505,9 @@ final class FullScreenArtworkWindowManager: ObservableObject {
         wallpaperTransitionHideTask?.cancel()
         wallpaperTransitionHideTask = nil
         wallpaperTransitionWindow?.orderOut(nil)
+        // The window and its view are reused by the next transition, so only the
+        // decoded wallpaper bitmap is dropped.
+        wallpaperTransitionView?.clearImage()
     }
 
     private func showVideoWindow(on screen: NSScreen, videoURL: URL) {
