@@ -1128,9 +1128,14 @@ class MusicManager: ObservableObject {
     /// bitmap is re-decoded by the next playback update when a session starts.
     private func releaseIdleArtwork() {
         guard isPlayerIdle, !hasActiveSession, !usingAppIconForArtwork else { return }
-        guard albumArt !== defaultImage else { return }
+        guard workItem != nil || albumArt !== defaultImage else { return }
 
-        needsArtworkRestore = true
+        // `workItem` captures the last decoded image and would assign it after
+        // the release, so drop the pending assignment before releasing.
+        workItem?.cancel()
+        workItem = nil
+
+        needsArtworkRestore = artworkData != nil
         albumArt = defaultImage
     }
 
