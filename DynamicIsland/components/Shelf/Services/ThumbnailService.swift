@@ -28,7 +28,14 @@ import UniformTypeIdentifiers
 actor ThumbnailService {
     static let shared = ThumbnailService()
 
+    /// Number of thumbnails kept in memory. Without a bound, every thumbnail the
+    /// shelf ever displayed stays resident for the lifetime of the app.
+    private static let cacheLimit = 120
+
     private var cache: [String: NSImage] = [:]
+    /// Cache keys in least-recently-used order, used to evict the oldest entries
+    /// once `cacheLimit` is exceeded.
+    private var cacheOrder: [String] = []
     private var pendingRequests: [String: Task<NSImage?, Never>] = [:]
     private let thumbnailGenerator = QLThumbnailGenerator.shared
 
@@ -38,6 +45,7 @@ actor ThumbnailService {
         let cacheKey = "\(url.path)_\(size.width)x\(size.height)"
         
         if let cached = cache[cacheKey] {
+            touch(cacheKey)
             return cached
         }
         
@@ -48,7 +56,7 @@ actor ThumbnailService {
         let task = Task<NSImage?, Never> {
             let thumbnail = await generateQuickLookThumbnail(for: url, size: size)
             if let thumbnail = thumbnail {
-                cache[cacheKey] = thumbnail
+                store(thumbnail, forKey: cacheKey)
             }
             pendingRequests[cacheKey] = nil
             return thumbnail
@@ -60,10 +68,33 @@ actor ThumbnailService {
     
     func clearCache() {
         cache.removeAll()
+        cacheOrder.removeAll()
     }
     
     func clearCache(for url: URL) {
-        cache = cache.filter { !$0.key.starts(with: url.path) }
+        let path = url.path
+        let removedKeys = cache.keys.filter { $0.starts(with: path) }
+        for key in removedKeys {
+            cache.removeValue(forKey: key)
+        }
+        cacheOrder.removeAll { $0.starts(with: path) }
+    }
+    
+    // MARK: - Cache bookkeeping
+    
+    private func store(_ thumbnail: NSImage, forKey key: String) {
+        cache[key] = thumbnail
+        touch(key)
+        
+        while cacheOrder.count > Self.cacheLimit {
+            let evictedKey = cacheOrder.removeFirst()
+            cache.removeValue(forKey: evictedKey)
+        }
+    }
+    
+    private func touch(_ key: String) {
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
     }
     
     // MARK: - Private Methods

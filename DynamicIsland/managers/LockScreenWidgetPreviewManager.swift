@@ -264,6 +264,11 @@ final class LockScreenWidgetPreviewManager: ObservableObject {
 
     private func closePreviewWindow() {
         previewWindow?.orderOut(nil)
+        // Drop the hosting view so the preview scene — which decodes the
+        // full-resolution wallpaper image — is not kept resident while the
+        // preview is closed. `ensurePreviewWindow()` rebuilds it on demand.
+        previewWindow?.contentView = nil
+        previewHostingView = nil
     }
 
     private func applyPreviewState() {
