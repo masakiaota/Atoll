@@ -328,7 +328,9 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
             let index = selected ?? trees.indices.max(by: {
                 (trees[$0][screen.name]?.count ?? 0) < (trees[$1][screen.name]?.count ?? 0)
             })
-            guard let index, let icons = trees[index][screen.name], !icons.isEmpty else { return nil }
+            // A display without a readable menu bar must not discard the others;
+            // the view model keeps the previous decision for a missing display.
+            guard let index, let icons = trees[index][screen.name], !icons.isEmpty else { continue }
             let translated = menus.map { $0.offsetBy(dx: screen.frame.minX - sourceLeft, dy: screen.frame.minY - barFrame.minY) }
             snapshots[screen.name] = .init(menuFrames: translated, iconFrames: icons,
                 isActiveScreen: screen.frame.intersects(barFrame))

@@ -149,12 +149,13 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         }
         if !isMenuBarColliding { menuBarHoverReveal = false }
         syncMenuBarHoverRevealTimer()
-        let retract = isMenuBarColliding && notchState == .closed && !collisionTemporaryReveal && !menuBarHoverReveal
+        // A notch hidden for fullscreen stays fully hidden; do not leave the line behind.
+        let retract = isMenuBarColliding && notchState == .closed && !hideOnClosed
+            && !collisionTemporaryReveal && !menuBarHoverReveal
         let changed = isRetractedForMenuBar != retract
         if changed {
             withAnimation(.easeInOut(duration: 0.28)) { isRetractedForMenuBar = retract }
             AppDelegate.shared?.refreshMenuBarPresentation()
-            if retract { MusicControlWindowManager.shared.hide() }
         }
         let logState = "\(isMenuBarColliding),\(retract),\(collisionTemporaryReveal),\(menuBarHoverReveal),\(snapshot?.isActiveScreen.description ?? "unknown")"
         if snapshot != nil, lastCollisionLogState != logState, UserDefaults.standard.bool(forKey: "menuBarCollisionDebugLog") {
@@ -302,7 +303,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
                 self?.updateMenuBarCollision()
             }
             .store(in: &cancellables)
-        menuBar.$collisionSnapshots.combineLatest($screen, $notchState)
+        menuBar.$collisionSnapshots.combineLatest($screen, $notchState, $hideOnClosed)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateMenuBarCollision() }
             .store(in: &cancellables)
