@@ -36,15 +36,17 @@ def positive_seconds(value):
 def stop(process):
     # Kill the process group, including compiler/test children, even if its
     # leader has already exited. A timed-out test must not continue in the background.
+    # macOS reports EPERM, not ESRCH, for a group whose remaining members have
+    # already exited and only await reaping; that group needs no further signal.
     try:
         os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=2)
-    except (ProcessLookupError, subprocess.TimeoutExpired):
+    except (ProcessLookupError, PermissionError, subprocess.TimeoutExpired):
         pass
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         process.wait()
 
