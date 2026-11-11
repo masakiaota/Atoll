@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 // Only unrelated services are fixtures. The runner inserts the production
 // AppDelegate methods and dictionaries, and compiles the real window class.
@@ -21,6 +22,7 @@ final class DynamicIslandViewModel {
     var notchState = State.closed
     var notchSize = CGSize(width: 690, height: 498)
     var isMenuBarExpanded = false
+    var isRetractedForMenuBar = false
     var onViewTeardown: (() -> Void)?
     var destroyed = false
     init(screen: String? = nil) { self.screen = screen }

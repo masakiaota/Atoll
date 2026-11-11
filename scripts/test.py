@@ -10,6 +10,7 @@ import tempfile
 from quiet import ROOT, positive_seconds, run
 
 SWIFT_TESTS = {
+    "menu-bar-collision": ["DynamicIsland/helpers/MenuBarCollision.swift", "DynamicIslandTests/MenuBarCollisionTests.swift"],
     "hidden-edge": ["DynamicIsland/helpers/HiddenEdgeHoverPollingState.swift", "DynamicIslandTests/HiddenEdgeHoverPollingStateTests.swift"],
     "localsend": ["DynamicIsland/components/Shelf/Services/LocalSendDiscoveryUsage.swift", "Tests/LocalSendDiscoveryUsage/main.swift"],
     "system-timer": ["DynamicIsland/helpers/SystemTimerLogReader.swift"],
@@ -21,7 +22,7 @@ SWIFT_TESTS = {
     "music-controls": ["DynamicIsland/managers/MusicControlWindowManager.swift", "DynamicIslandTests/MusicControlWindowManagerTests.swift"],
     "artwork-processing": [],
 }
-UNIT = ["output", "hidden-edge", "localsend", "system-timer"]
+UNIT = ["menu-bar-collision", "output", "hidden-edge", "localsend", "system-timer"]
 STANDALONE = UNIT + ["layout", "input", "surface", "display-lifecycle", "display-content", "music-controls", "artwork-processing"]
 GROUPS = {"unit": UNIT, "standalone": STANDALONE, "all": STANDALONE + ["ui"]}
 

@@ -33,6 +33,90 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     @Published private(set) var isMenuBarExpanded = false
     @Published private(set) var availableLeftWidth: CGFloat? = nil
 
+    @Published private(set) var isMenuBarColliding = false
+    @Published private(set) var isRetractedForMenuBar = false
+    private var collisionWidth: CGFloat?
+    var menuBarCollisionWidth: CGFloat { collisionWidth ?? closedNotchSize.width }
+    private var lastCollisionLogState: String?
+    private static let collisionLogQueue = DispatchQueue(label: "dev.atoll.menu-bar-collision-log")
+
+    func updateMenuBarCollisionPresentation(width: CGFloat) {
+        if notchState == .closed { collisionWidth = width }
+        updateMenuBarCollision()
+    }
+
+    private func updateMenuBarCollision() {
+        guard !AppRuntimeEnvironment.isUITesting,
+              let display = NSScreen.screens.first(where: { $0.localizedName == screen }) ?? NSScreen.main else { return }
+        guard display.physicalNotchFrame == nil else {
+            if isRetractedForMenuBar {
+                isRetractedForMenuBar = false
+                AppDelegate.shared?.refreshMenuBarPresentation()
+            }
+            if isMenuBarColliding { isMenuBarColliding = false }
+            collisionWidth = nil
+            return
+        }
+        // Match ContentView's screen-specific sneakPeek and expandingView predicates.
+        // This also runs while an inactive display uses its lightweight placeholder.
+        let currentScreen = screen ?? coordinator.selectedScreen
+        let sneak = coordinator.sneakPeek
+        let sneakVisible = sneak.show && (!Defaults[.showOnAllDisplays]
+            || sneak.targetScreenName == nil || sneak.targetScreenName == currentScreen)
+        var expansionVisible = coordinator.expandingView.show
+        if coordinator.expandingView.type == .battery {
+            let battery = BatteryStatusViewModel.shared
+            expansionVisible = expansionVisible && Defaults[.showPowerStatusNotifications]
+                && battery.activeTemporaryHUDKind != nil
+                && (Defaults[.showOnAllDisplays] || battery.activeTemporaryHUDTargetScreenName == nil
+                    || battery.activeTemporaryHUDTargetScreenName == currentScreen)
+        }
+        let collisionTemporaryReveal = sneakVisible || expansionVisible
+        let enabled = Defaults[.retractVirtualNotchOnMenuBarCollision]
+        let snapshot = MenuBarOverflowMonitor.shared.collisionSnapshots[display.localizedName]
+        let width = collisionWidth ?? getClosedNotchSize(screen: display.localizedName).width
+        let notch = CGRect(x: display.frame.midX - width / 2, y: display.frame.maxY - closedNotchSize.height,
+                           width: width, height: closedNotchSize.height)
+        if !enabled {
+            if isMenuBarColliding { isMenuBarColliding = false }
+        } else if let snapshot {
+            let collision = MenuBarCollision.shouldRetract(
+                items: snapshot.menuFrames + snapshot.iconFrames, notch: notch, currentlyRetracted: isMenuBarColliding)
+            if isMenuBarColliding != collision { isMenuBarColliding = collision }
+        }
+        let retract = isMenuBarColliding && notchState == .closed && !collisionTemporaryReveal
+        let changed = isRetractedForMenuBar != retract
+        if changed {
+            withAnimation(.easeInOut(duration: 0.28)) { isRetractedForMenuBar = retract }
+            AppDelegate.shared?.refreshMenuBarPresentation()
+            if retract { MusicControlWindowManager.shared.hide() }
+        }
+        let logState = "\(isMenuBarColliding),\(retract),\(collisionTemporaryReveal),\(snapshot?.isActiveScreen.description ?? "unknown")"
+        if snapshot != nil, lastCollisionLogState != logState, UserDefaults.standard.bool(forKey: "menuBarCollisionDebugLog") {
+            lastCollisionLogState = logState
+            let overlapping = (snapshot?.menuFrames ?? []) + (snapshot?.iconFrames ?? [])
+            var ranges: [String] = []
+            let left = notch.minX - 4
+            let right = notch.maxX + 4
+            for item in overlapping where item.maxX > left && item.minX < right {
+                ranges.append("\(item.minX)...\(item.maxX)")
+            }
+            let overlap = ranges.joined(separator: ",")
+            let menu = snapshot?.menuFrames.map(\.maxX).max().map { String(describing: $0) } ?? "unknown"
+            let icons = snapshot?.iconFrames.map(\.minX).min().map { String(describing: $0) } ?? "unknown"
+            let line = "\(Date().ISO8601Format()) screen=\(display.localizedName) notch=\(notch.minX)...\(notch.maxX) menuRight=\(menu) iconLeft=\(icons) overlaps=\(overlap) retracted=\(retract) temporary=\(collisionTemporaryReveal) active=\(snapshot?.isActiveScreen.description ?? "unknown")\n"
+            Self.collisionLogQueue.async {
+                let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Atoll-menu-bar-collision.log")
+                try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+                guard let handle = try? FileHandle(forWritingTo: url) else { return }
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: Data(line.utf8))
+            }
+        }
+    }
+
     var physicalNotchFrame: CGRect? {
         (NSScreen.screens.first { $0.localizedName == screen } ?? NSScreen.main)?.physicalNotchFrame
     }
@@ -146,6 +230,21 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         closedNotchSize = notchSize
 
         let menuBar = MenuBarOverflowMonitor.shared
+        coordinator.$sneakPeek.combineLatest(coordinator.$expandingView)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard self?.physicalNotchFrame == nil else { return }
+                self?.updateMenuBarCollision()
+            }
+            .store(in: &cancellables)
+        menuBar.$collisionSnapshots.combineLatest($screen, $notchState)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateMenuBarCollision() }
+            .store(in: &cancellables)
+        Defaults.publisher(.retractVirtualNotchOnMenuBarCollision)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateMenuBarCollision() }
+            .store(in: &cancellables)
         menuBar.$expandedScreens.combineLatest($screen)
             .receive(on: RunLoop.main)
             .sink { [weak self] expanded, screenName in
@@ -368,6 +467,10 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         let screenFrame = getScreenFrame(screen)
         if let frame = screenFrame {
             
+            if isRetractedForMenuBar {
+                let width = getClosedNotchSize(screen: screen).width
+                return CGRect(x: frame.midX - width / 2, y: frame.maxY - 3, width: width, height: 3).contains(position)
+            }
             let baseY = frame.maxY - notchSize.height
             let baseX = frame.midX - notchSize.width / 2
             
@@ -390,6 +493,10 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             )
         }
 
+        if isRetractedForMenuBar {
+            notchState = .open
+            updateMenuBarCollision()
+        }
         if Thread.isMainThread {
             applyWindowResize()
         } else {

@@ -11,7 +11,11 @@ struct InactiveDisplayNotchView: View {
     var body: some View {
         let physical = vm.physicalNotchFrame
         let island = physical == nil && externalDisplayStyle == .dynamicIsland
-        let shape = island
+        let retracted = physical == nil && vm.isRetractedForMenuBar
+        let shape = retracted
+            ? AnyShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 2,
+                                             bottomTrailingRadius: 2, topTrailingRadius: 0))
+            : island
             ? AnyShape(DynamicIslandPillShape(cornerRadius: max(
                 vm.closedNotchSize.height / 2, dynamicIslandPillCornerRadiusInsets.closed.standard
             )))
@@ -20,13 +24,13 @@ struct InactiveDisplayNotchView: View {
 
         AtollCollapsedSurface(
             width: physical?.width ?? vm.closedNotchSize.width,
-            height: hideNonNotchUntilHover && physical == nil ? 0 : height,
+            height: retracted ? 3 : (hideNonNotchUntilHover && physical == nil ? 0 : height),
             shape: shape
         )
         .background(NotchMouseRegion(shape: shape))
         .contentShape(shape)
         .onTapGesture { vm.open() }
-        .padding(.top, island ? dynamicIslandTopOffset : 0)
+        .padding(.top, island && !retracted ? dynamicIslandTopOffset : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Atoll")

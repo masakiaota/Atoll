@@ -571,6 +571,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the user has chosen the Dynamic Island style.
     private func adjustedSizeForScreen(_ baseSize: CGSize, screen: NSScreen) -> CGSize {
         let model = viewModels[screen.displayID] ?? vm
+        if screen.physicalNotchFrame == nil, model.isRetractedForMenuBar {
+            return CGSize(width: getClosedNotchSize(screen: screen.localizedName).width, height: 3)
+        }
         if let physical = screen.physicalNotchFrame {
             if model.isMenuBarExpanded { return physical.size }
             return baseSize
@@ -632,7 +635,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let newY = (screenFrame.origin.y + screenFrame.height - clampedHeight).rounded()
         let targetFrame = NSRect(x: newX, y: newY, width: clampedWidth, height: clampedHeight)
 
-        window.setFrame(targetFrame, display: true)
+        if screen.physicalNotchFrame == nil,
+           (window.frame.height == 3 || (viewModels[screen.displayID] ?? vm).isRetractedForMenuBar) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.28
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(targetFrame, display: true)
+            }
+        } else {
+            window.setFrame(targetFrame, display: true)
+        }
     }
 
     private func restoreFocusTaskWindowsAfterTransition() {
