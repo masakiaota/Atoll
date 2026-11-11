@@ -37,6 +37,42 @@ class DynamicIslandWindow: NSPanel {
     private var globalMouseMonitor: Any?
     private var mouseDownInNotch = false
 
+    /// "Show Desktop" sweeps a transient window away with ordinary windows, and
+    /// macOS reports that neither to AppKit nor through Dock. The notch belongs
+    /// to the screen edge, so compare where the window server really draws it
+    /// with where Atoll placed it, and fade it out while it is displaced.
+    private var displacementTimer: Timer?
+    private var lastDisplacementCheck: TimeInterval = 0
+    private var isDisplacedBySystem = false {
+        didSet {
+            guard oldValue != isDisplacedBySystem else { return }
+            super.alphaValue = isDisplacedBySystem ? 0 : requestedAlpha
+            updateMouseEventPassthrough()
+        }
+    }
+    private var requestedAlpha: CGFloat = 1
+    override var alphaValue: CGFloat {
+        get { requestedAlpha }
+        set {
+            requestedAlpha = newValue
+            super.alphaValue = isDisplacedBySystem ? 0 : newValue
+        }
+    }
+
+    private func checkSystemDisplacement(throttled: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if throttled, now - lastDisplacementCheck < 0.05 { return }
+        lastDisplacementCheck = now
+        guard windowNumber > 0, isVisible,
+              let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(windowNumber)) as? [[String: Any]])?.first,
+              let dictionary = info[kCGWindowBounds as String] as? NSDictionary,
+              let actual = CGRect(dictionaryRepresentation: dictionary),
+              let top = NSScreen.screens.first?.frame.maxY else { return }
+        // Far beyond any frame animation of our own; Show Desktop moves it by most of a screen.
+        let displaced = abs(actual.minX - frame.minX) > 30 || abs(actual.minY - (top - frame.maxY)) > 30
+        if isDisplacedBySystem != displaced { isDisplacedBySystem = displaced }
+    }
+
     override init(
         contentRect: NSRect,
         styleMask: NSWindow.StyleMask,
@@ -88,6 +124,14 @@ class DynamicIslandWindow: NSPanel {
         }
 
         ScreenCaptureVisibilityManager.shared.register(self, scope: .entireInterface)
+        // Mouse events give an immediate check for free; the timer covers
+        // keyboard-triggered Show Desktop while the pointer rests.
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.checkSystemDisplacement(throttled: false)
+        }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        displacementTimer = timer
     }
 
     private func trackMouseButton(_ event: NSEvent) {
@@ -102,6 +146,7 @@ class DynamicIslandWindow: NSPanel {
     }
 
     func updateMouseEventPassthrough(at location: NSPoint = NSEvent.mouseLocation) {
+        checkSystemDisplacement(throttled: true)
         // Reuse the existing native mouse monitors instead of adding a timer
         // or one more pair of global/local monitors per display.
         if onPointerScreenChange != nil, let screen {
@@ -111,7 +156,7 @@ class DynamicIslandWindow: NSPanel {
                 onPointerScreenChange?(containsPointer)
             }
         }
-        if suppressMouseEvents {
+        if suppressMouseEvents || isDisplacedBySystem {
             mouseDownInNotch = false
             ignoresMouseEvents = true
             return
@@ -129,6 +174,8 @@ class DynamicIslandWindow: NSPanel {
 
     override func close() {
         onPointerScreenChange = nil
+        displacementTimer?.invalidate()
+        displacementTimer = nil
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         localMouseMonitor = nil
