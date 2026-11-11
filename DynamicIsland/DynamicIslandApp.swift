@@ -676,6 +676,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MissionControlProbe.shared.start()
         if AppRuntimeEnvironment.forcesSingleDisplayForUITesting || AppRuntimeEnvironment.forcesAllDisplaysForUITesting {
             // Defaults decodes Bool objects, not the strings supplied by `-key
             // YES`. Use typed, process-local overrides without persisting them.
