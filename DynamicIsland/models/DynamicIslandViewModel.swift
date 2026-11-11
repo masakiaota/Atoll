@@ -40,6 +40,67 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     private var lastCollisionLogState: String?
     private static let collisionLogQueue = DispatchQueue(label: "dev.atoll.menu-bar-collision-log")
 
+    /// While retracted the window is only a 3pt line, so the pointer is polled
+    /// instead: pushing it against the top edge brings the notch back down, and
+    /// it stays down (overlapping menu bar items) until the pointer leaves it.
+    private var menuBarHoverReveal = false
+    private var menuBarHoverRevealTimer: Timer?
+    private var menuBarHoverLeftAt: Date?
+    private var menuBarHoverInsideSince: Date?
+
+    private func syncMenuBarHoverRevealTimer() {
+        let needed = isMenuBarColliding || menuBarHoverReveal
+        if needed, menuBarHoverRevealTimer == nil {
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pollMenuBarHoverReveal() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            menuBarHoverRevealTimer = timer
+        } else if !needed, let timer = menuBarHoverRevealTimer {
+            timer.invalidate()
+            menuBarHoverRevealTimer = nil
+            menuBarHoverLeftAt = nil
+        }
+    }
+
+    private func pollMenuBarHoverReveal() {
+        guard let display = NSScreen.screens.first(where: { $0.localizedName == screen }) ?? NSScreen.main else { return }
+        let location = NSEvent.mouseLocation
+        let width = collisionWidth ?? getClosedNotchSize(screen: display.localizedName).width
+        let height = closedNotchSize.height
+        if !menuBarHoverReveal {
+            let edge = CGRect(x: display.frame.midX - width / 2 - 8, y: display.frame.maxY - 8, width: width + 16, height: 10)
+            guard isMenuBarColliding, notchState == .closed, edge.contains(location) else { return }
+            menuBarHoverReveal = true
+            menuBarHoverLeftAt = nil
+            menuBarHoverInsideSince = nil
+            updateMenuBarCollision()
+            return
+        }
+        let hold = CGRect(x: display.frame.midX - width / 2 - 12, y: display.frame.maxY - height - 10,
+                          width: width + 24, height: height + 12)
+        if notchState != .closed || hold.contains(location) {
+            menuBarHoverLeftAt = nil
+            // The view's own hover tracking may miss a pointer that was already
+            // inside when the window grew back, so honor hover-to-open here too.
+            if notchState == .closed, Defaults[.openNotchOnHover], !coordinator.isHoverOpenSuppressed {
+                let since = menuBarHoverInsideSince ?? Date()
+                menuBarHoverInsideSince = since
+                if Date().timeIntervalSince(since) >= max(Defaults[.minimumHoverDuration], 0.2) {
+                    menuBarHoverInsideSince = .distantFuture // once per reveal
+                    open()
+                }
+            }
+        } else if let left = menuBarHoverLeftAt {
+            guard Date().timeIntervalSince(left) > 0.35 else { return }
+            menuBarHoverReveal = false
+            menuBarHoverLeftAt = nil
+            updateMenuBarCollision()
+        } else {
+            menuBarHoverLeftAt = Date()
+        }
+    }
+
     func updateMenuBarCollisionPresentation(width: CGFloat) {
         if notchState == .closed { collisionWidth = width }
         updateMenuBarCollision()
@@ -55,6 +116,8 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             }
             if isMenuBarColliding { isMenuBarColliding = false }
             collisionWidth = nil
+            menuBarHoverReveal = false
+            syncMenuBarHoverRevealTimer()
             return
         }
         // Match ContentView's screen-specific sneakPeek and expandingView predicates.
@@ -84,14 +147,16 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
                 items: snapshot.menuFrames + snapshot.iconFrames, notch: notch, currentlyRetracted: isMenuBarColliding)
             if isMenuBarColliding != collision { isMenuBarColliding = collision }
         }
-        let retract = isMenuBarColliding && notchState == .closed && !collisionTemporaryReveal
+        if !isMenuBarColliding { menuBarHoverReveal = false }
+        syncMenuBarHoverRevealTimer()
+        let retract = isMenuBarColliding && notchState == .closed && !collisionTemporaryReveal && !menuBarHoverReveal
         let changed = isRetractedForMenuBar != retract
         if changed {
             withAnimation(.easeInOut(duration: 0.28)) { isRetractedForMenuBar = retract }
             AppDelegate.shared?.refreshMenuBarPresentation()
             if retract { MusicControlWindowManager.shared.hide() }
         }
-        let logState = "\(isMenuBarColliding),\(retract),\(collisionTemporaryReveal),\(snapshot?.isActiveScreen.description ?? "unknown")"
+        let logState = "\(isMenuBarColliding),\(retract),\(collisionTemporaryReveal),\(menuBarHoverReveal),\(snapshot?.isActiveScreen.description ?? "unknown")"
         if snapshot != nil, lastCollisionLogState != logState, UserDefaults.standard.bool(forKey: "menuBarCollisionDebugLog") {
             lastCollisionLogState = logState
             let overlapping = (snapshot?.menuFrames ?? []) + (snapshot?.iconFrames ?? [])
@@ -104,7 +169,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             let overlap = ranges.joined(separator: ",")
             let menu = snapshot?.menuFrames.map(\.maxX).max().map { String(describing: $0) } ?? "unknown"
             let icons = snapshot?.iconFrames.map(\.minX).min().map { String(describing: $0) } ?? "unknown"
-            let line = "\(Date().ISO8601Format()) screen=\(display.localizedName) notch=\(notch.minX)...\(notch.maxX) menuRight=\(menu) iconLeft=\(icons) overlaps=\(overlap) retracted=\(retract) temporary=\(collisionTemporaryReveal) active=\(snapshot?.isActiveScreen.description ?? "unknown")\n"
+            let line = "\(Date().ISO8601Format()) screen=\(display.localizedName) notch=\(notch.minX)...\(notch.maxX) menuRight=\(menu) iconLeft=\(icons) overlaps=\(overlap) retracted=\(retract) temporary=\(collisionTemporaryReveal) hover=\(menuBarHoverReveal) active=\(snapshot?.isActiveScreen.description ?? "unknown")\n"
             Self.collisionLogQueue.async {
                 let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Atoll-menu-bar-collision.log")
                 try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
