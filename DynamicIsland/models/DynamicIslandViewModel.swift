@@ -64,6 +64,8 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     }
 
     private func pollMenuBarHoverReveal() {
+        // The lock screen closes the notch itself; never reveal or reopen it there.
+        guard !LockScreenManager.shared.isLocked else { return }
         guard let display = NSScreen.screens.first(where: { $0.localizedName == screen }) ?? NSScreen.main else { return }
         let location = NSEvent.mouseLocation
         let width = collisionWidth ?? getClosedNotchSize(screen: display.localizedName).width
@@ -83,7 +85,13 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             menuBarHoverLeftAt = nil
             // The view's own hover tracking may miss a pointer that was already
             // inside when the window grew back, so honor hover-to-open here too.
-            if notchState == .closed, Defaults[.openNotchOnHover], !coordinator.isHoverOpenSuppressed {
+            let sneak = coordinator.sneakPeek
+            let sneakVisible = sneak.show && (!Defaults[.showOnAllDisplays]
+                || sneak.targetScreenName == nil || sneak.targetScreenName == (screen ?? coordinator.selectedScreen))
+            if sneakVisible {
+                // Same rule as ContentView.handleHover: a HUD is not interrupted by hover-open.
+                if menuBarHoverInsideSince != .distantFuture { menuBarHoverInsideSince = nil }
+            } else if notchState == .closed, Defaults[.openNotchOnHover], !coordinator.isHoverOpenSuppressed {
                 let since = menuBarHoverInsideSince ?? Date()
                 menuBarHoverInsideSince = since
                 if Date().timeIntervalSince(since) >= max(Defaults[.minimumHoverDuration], 0.2) {
@@ -282,6 +290,9 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     func destroy() {
         onViewTeardown?()
         onViewTeardown = nil
+        // The run loop retains the timer; release it with the view model.
+        menuBarHoverRevealTimer?.invalidate()
+        menuBarHoverRevealTimer = nil
         cancellables.forEach { $0.cancel() }
         cancellables.removeAll()
     }
