@@ -41,18 +41,11 @@ class DynamicIslandWindow: NSPanel {
     static var allWindows: [DynamicIslandWindow] { registry.allObjects }
 
     /// "Show Desktop" sweeps a transient window away with ordinary windows, so
-    /// the notch is stationary whenever `MissionControlProbe` can hide it during
-    /// Mission Control (which a stationary window would otherwise stay in).
-    /// Hiding keeps the alpha other code asks for.
+    /// the notch is stationary whenever `MissionControlProbe` can tell Mission
+    /// Control apart (a stationary window would otherwise stay visible in it).
+    /// The content draws the tuck-away motion; the window only stops taking
+    /// the pointer while it is tucked.
     private var isHiddenForMissionControl = false
-    private var requestedAlpha: CGFloat = 1
-    override var alphaValue: CGFloat {
-        get { requestedAlpha }
-        set {
-            requestedAlpha = newValue
-            super.alphaValue = isHiddenForMissionControl ? 0 : newValue
-        }
-    }
 
     func applyMissionControlState() {
         let probe = MissionControlProbe.shared
@@ -63,7 +56,6 @@ class DynamicIslandWindow: NSPanel {
         let hide = probe.isReliable && probe.isMissionControlActive
         guard hide != isHiddenForMissionControl else { return }
         isHiddenForMissionControl = hide
-        super.alphaValue = hide ? 0 : requestedAlpha
         updateMouseEventPassthrough()
     }
 

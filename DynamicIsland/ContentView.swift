@@ -649,6 +649,8 @@ struct ContentView: View {
                 ? -(vm.closedNotchSize.height + pillTopOffset + currentShadowPadding + 10)
                 : 0
             )
+            .animation(NotchTuckMotion.animation(hiding: shouldHideUntilHover && !isHovering),
+                       value: shouldHideUntilHover && !isHovering)
             .onChange(of: vm.notchState) { _, newState in
                 syncStatsMonitoringState()
 
@@ -770,7 +772,7 @@ struct ContentView: View {
                 .offset(y: vm.isRetractedForMenuBar
                         ? -(vm.closedNotchSize.height + pillTopOffset + currentShadowPadding + 10) : 0)
                 .allowsHitTesting(!vm.isRetractedForMenuBar)
-                .animation(.easeInOut(duration: 0.28), value: vm.isRetractedForMenuBar)
+                .animation(NotchTuckMotion.animation(hiding: vm.isRetractedForMenuBar), value: vm.isRetractedForMenuBar)
                 .animation(useModernCloseAnimation
                            ? .spring(response: vm.notchState == .open ? 0.42 : 0.45,
                                      dampingFraction: vm.notchState == .open ? 0.8 : 1)
@@ -796,6 +798,9 @@ struct ContentView: View {
             maxHeight: (dynamicNotchSize.height + (vm.notchState == .open ? 12 : 0) + (isDynamicIslandMode ? dynamicIslandTopOffset + dynamicIslandShadowInset * 2 : currentShadowPadding)).rounded(),
             alignment: .top
         )
+        .offset(y: vm.isTuckedForMissionControl ? -(vm.closedNotchSize.height + pillTopOffset + 12) : 0)
+        .opacity(vm.isTuckedForMissionControl ? 0 : 1)
+        .animation(NotchTuckMotion.animation(hiding: vm.isTuckedForMissionControl), value: vm.isTuckedForMissionControl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environmentObject(privacyManager)
         .background {

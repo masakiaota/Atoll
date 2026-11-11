@@ -27,10 +27,14 @@ struct InactiveDisplayNotchView: View {
             height: retracted ? 3 : (hideNonNotchUntilHover && physical == nil ? 0 : height),
             shape: shape
         )
+        .animation(NotchTuckMotion.animation(hiding: retracted), value: retracted)
         .background(NotchMouseRegion(shape: shape))
         .contentShape(shape)
         .onTapGesture { vm.open() }
         .padding(.top, island && !retracted ? dynamicIslandTopOffset : 0)
+        .offset(y: vm.isTuckedForMissionControl ? -(vm.closedNotchSize.height + 12) : 0)
+        .opacity(vm.isTuckedForMissionControl ? 0 : 1)
+        .animation(NotchTuckMotion.animation(hiding: vm.isTuckedForMissionControl), value: vm.isTuckedForMissionControl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Atoll")

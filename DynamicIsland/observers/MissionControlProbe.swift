@@ -106,6 +106,7 @@ final class MissionControlProbe {
             debugLog("mission control active=\(active)")
         }
         for notch in DynamicIslandWindow.allWindows { notch.applyMissionControlState() }
+        AppDelegate.shared?.setTuckedForMissionControl(isReliable && isMissionControlActive)
     }
 
     private struct DockWindow: CustomStringConvertible {
