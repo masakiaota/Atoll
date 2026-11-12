@@ -1,6 +1,13 @@
 import AppKit
 import ApplicationServices
 import Combine
+import Defaults
+
+struct MenuBarCollisionSnapshot: Equatable, Sendable {
+    var menuFrames: [CGRect]
+    var iconFrames: [CGRect]
+    var isActiveScreen: Bool
+}
 
 /// Observes the overflow button, not ordinary NSMenu tracking. macOS 27 keeps
 /// several menu-bar trees (including inactive Spaces) alive at the same location.
@@ -10,6 +17,8 @@ final class MenuBarOverflowMonitor: ObservableObject {
     @Published private(set) var expandedScreens: Set<String> = []
     @Published private(set) var availableLeftWidths: [String: CGFloat] = [:]
 
+    @Published private(set) var collisionSnapshots: [String: MenuBarCollisionSnapshot] = [:]
+
     private let reader = MenuBarOverflowReader()
     private var timer: Timer?
     private var tokens: [NSObjectProtocol] = []
@@ -17,6 +26,12 @@ final class MenuBarOverflowMonitor: ObservableObject {
 
     private init() {
         guard !AppRuntimeEnvironment.isUITesting else { return }
+        reader.didReadCollisions = { [weak self] snapshots in
+            DispatchQueue.main.async {
+                guard let self, self.collisionSnapshots != snapshots else { return }
+                self.collisionSnapshots = snapshots
+            }
+        }
         reader.didChange = { [weak self] expanded, widths in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -57,7 +72,14 @@ final class MenuBarOverflowMonitor: ObservableObject {
                                        width: screen.frame.width, height: notch.height),
                          notchMinX: notch.minX)
         }
-        reader.refresh(screens: screens,
+        let collisionScreens = Defaults[.retractVirtualNotchOnMenuBarCollision]
+            ? NSScreen.screens.filter { $0.physicalNotchFrame == nil }.map { screen in
+                MenuBarOverflowReader.Display(name: screen.localizedName,
+                    frame: CGRect(x: screen.frame.minX, y: top - screen.frame.maxY,
+                                  width: screen.frame.width, height: max(24, NSStatusBar.system.thickness)),
+                    notchMinX: screen.frame.midX - getClosedNotchSize(screen: screen.localizedName).width / 2)
+            } : []
+        reader.refresh(screens: screens, collisionScreens: collisionScreens,
                        frontPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
                        rediscover: rediscover)
     }
@@ -70,6 +92,8 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
         let notchMinX: CGFloat
     }
     var didChange: (@Sendable (Set<String>, [String: CGFloat]) -> Void)?
+    var didReadCollisions: (@Sendable ([String: MenuBarCollisionSnapshot]) -> Void)?
+    private var lastCollisionRead = Date.distantPast
     var requestRefresh: (@Sendable () -> Void)?
     private let queue = DispatchQueue(label: "dev.atoll.menu-bar-overflow", qos: .userInteractive)
     private var observer: AXObserver?
@@ -93,9 +117,9 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
         return (show, hide)
     }()
 
-    func refresh(screens: [Display], frontPID: pid_t?, rediscover: Bool) {
+    func refresh(screens: [Display], collisionScreens: [Display], frontPID: pid_t?, rediscover: Bool) {
         queue.async { [self] in
-            guard AXIsProcessTrusted(), !screens.isEmpty else {
+            guard AXIsProcessTrusted(), !screens.isEmpty || !collisionScreens.isEmpty else {
                 disconnect()
                 didChange?([], [:])
                 return
@@ -109,7 +133,7 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
             }
             let reconnect = pid != currentPID || observer == nil
             if reconnect { connect(pid: currentPID) }
-            if reconnect || rediscover || buttons.isEmpty || Date().timeIntervalSince(lastDiscovery) > 5 {
+            if !screens.isEmpty && (reconnect || rediscover || buttons.isEmpty || Date().timeIntervalSince(lastDiscovery) > 5) {
                 discoverButtons()
             }
             let system = AXUIElementCreateSystemWide()
@@ -134,7 +158,13 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
                 }
             }
             expanded.formIntersection(candidateScreens)
-            let widths = availableWidths(screens: screens, frontPID: frontPID)
+            if !collisionScreens.isEmpty && (rediscover || Date().timeIntervalSince(lastCollisionRead) >= 2) {
+                lastCollisionRead = Date()
+                if let snapshots = readCollisions(screens: collisionScreens, frontPID: frontPID) {
+                    didReadCollisions?(snapshots)
+                }
+            }
+            let widths = screens.isEmpty ? [:] : availableWidths(screens: screens, frontPID: frontPID)
             lastExpanded = expanded
             didChange?(expanded, widths)
         }
@@ -215,6 +245,97 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
                 .map(\.maxX).max() ?? screen.frame.minX
             return (screen.name, max(0, screen.notchMinX - menuRight - 12))
         })
+    }
+
+    // One MenuBarAgent top-level tree per display. Failed/partial reads are never published.
+    private func readCollisions(screens: [Display], frontPID: pid_t?) -> [String: MenuBarCollisionSnapshot]? {
+        guard let frontPID else { return nil }
+        func read(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+            AXUIElementSetMessagingTimeout(element, 0.03)
+            return attribute(element, key)
+        }
+        let app = AXUIElementCreateApplication(frontPID)
+        guard let value = read(app, kAXMenuBarAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let bar = unsafeBitCast(value, to: AXUIElement.self)
+        guard let menuChildren = read(bar, kAXChildrenAttribute) as? [AXUIElement], !menuChildren.isEmpty else { return nil }
+        let menuFrames = menuChildren.compactMap { child -> CGRect? in
+            AXUIElementSetMessagingTimeout(child, 0.03)
+            return frame(child)
+        }
+        guard menuFrames.count == menuChildren.count else { return nil }
+        let menus = menuFrames.filter { $0.width > 0 && $0.height > 0 }
+        guard !menus.isEmpty else { return nil }
+        let allScreens = screens
+        // A front menu may live on a hardware-notch display, outside `screens`.
+        guard let barFrame = frame(bar) else { return nil }
+        let sourceLeft = barFrame.minX
+        let root = AXUIElementCreateApplication(pid)
+        guard let roots = read(root, kAXChildrenAttribute) as? [AXUIElement], !roots.isEmpty else { return nil }
+        var trees = Array(repeating: [String: [CGRect]](), count: roots.count)
+        var failed = false
+        let deadline = Date().addingTimeInterval(0.8)
+        func visit(_ element: AXUIElement, depth: Int, tree: Int) {
+            guard depth <= 3, !failed else { return }
+            guard Date() < deadline else { failed = true; return }
+            let keys = [kAXRoleAttribute, kAXSubroleAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXChildrenAttribute] as CFArray
+            var result: CFArray?
+            AXUIElementSetMessagingTimeout(element, 0.03)
+            guard AXUIElementCopyMultipleAttributeValues(element, keys, [], &result) == .success,
+                  let values = result as? [Any], values.count == 5 else { failed = true; return }
+            guard let role = values[0] as? String else { failed = true; return }
+            if role == kAXApplicationRole { return }
+            var point = CGPoint.zero
+            var size = CGSize.zero
+            let p = values[2] as CFTypeRef, z = values[3] as CFTypeRef
+            var rect: CGRect?
+            if CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(z) == AXValueGetTypeID(),
+               AXValueGetValue(unsafeBitCast(p, to: AXValue.self), .cgPoint, &point),
+               AXValueGetValue(unsafeBitCast(z, to: AXValue.self), .cgSize, &size) {
+                rect = CGRect(origin: point, size: size)
+            }
+            if let rect, rect.width > 0, rect.height > 0 {
+                let matches = allScreens.filter { $0.frame.contains(CGPoint(x: rect.midX, y: rect.midY)) }
+                let isIcon = (role == kAXGroupRole && (values[1] as? String) == nil)
+                    || (role == kAXMenuBarItemRole && (values[1] as? String) == "AXMenuExtra")
+                    || role == kAXButtonRole
+                if isIcon {
+                    for screen in matches where rect.width < screen.frame.width / 2 {
+                        trees[tree][screen.name, default: []].append(rect)
+                    }
+                    if !matches.isEmpty { return }
+                }
+            }
+            for child in values[4] as? [AXUIElement] ?? [] { visit(child, depth: depth + 1, tree: tree) }
+        }
+        for (index, child) in roots.enumerated() { visit(child, depth: 0, tree: index) }
+        guard !failed else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.05)
+        var snapshots: [String: MenuBarCollisionSnapshot] = [:]
+        for screen in screens {
+            var selected: Int?
+            var hit: AXUIElement?
+            if AXUIElementCopyElementAtPosition(system, Float(screen.frame.maxX - 30), Float(screen.frame.midY), &hit) == .success {
+                for _ in 0..<6 {
+                    guard let element = hit else { break }
+                    if let index = roots.firstIndex(where: { CFEqual($0, element) }),
+                       !(trees[index][screen.name] ?? []).isEmpty { selected = index; break }
+                    hit = read(element, kAXParentAttribute).flatMap {
+                        CFGetTypeID($0) == AXUIElementGetTypeID() ? unsafeBitCast($0, to: AXUIElement.self) : nil
+                    }
+                }
+            }
+            let index = selected ?? trees.indices.max(by: {
+                (trees[$0][screen.name]?.count ?? 0) < (trees[$1][screen.name]?.count ?? 0)
+            })
+            // A display without a readable menu bar must not discard the others;
+            // the view model keeps the previous decision for a missing display.
+            guard let index, let icons = trees[index][screen.name], !icons.isEmpty else { continue }
+            let translated = menus.map { $0.offsetBy(dx: screen.frame.minX - sourceLeft, dy: screen.frame.minY - barFrame.minY) }
+            snapshots[screen.name] = .init(menuFrames: translated, iconFrames: icons,
+                isActiveScreen: screen.frame.intersects(barFrame))
+        }
+        return snapshots
     }
 
     private func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {

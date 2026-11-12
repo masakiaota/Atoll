@@ -37,6 +37,28 @@ class DynamicIslandWindow: NSPanel {
     private var globalMouseMonitor: Any?
     private var mouseDownInNotch = false
 
+    private static let registry = NSHashTable<DynamicIslandWindow>.weakObjects()
+    static var allWindows: [DynamicIslandWindow] { registry.allObjects }
+
+    /// "Show Desktop" sweeps a transient window away with ordinary windows, so
+    /// the notch is stationary whenever `MissionControlProbe` can tell Mission
+    /// Control apart (a stationary window would otherwise stay visible in it).
+    /// The content draws the tuck-away motion; the window only stops taking
+    /// the pointer while it is tucked.
+    private var isHiddenForMissionControl = false
+
+    func applyMissionControlState() {
+        let probe = MissionControlProbe.shared
+        var behavior = collectionBehavior
+        behavior.remove(probe.isReliable ? .transient : .stationary)
+        behavior.insert(probe.isReliable ? .stationary : .transient)
+        if behavior != collectionBehavior { collectionBehavior = behavior }
+        let hide = probe.isReliable && probe.isMissionControlActive
+        guard hide != isHiddenForMissionControl else { return }
+        isHiddenForMissionControl = hide
+        updateMouseEventPassthrough()
+    }
+
     override init(
         contentRect: NSRect,
         styleMask: NSWindow.StyleMask,
@@ -88,6 +110,8 @@ class DynamicIslandWindow: NSPanel {
         }
 
         ScreenCaptureVisibilityManager.shared.register(self, scope: .entireInterface)
+        Self.registry.add(self)
+        applyMissionControlState()
     }
 
     private func trackMouseButton(_ event: NSEvent) {
@@ -111,7 +135,7 @@ class DynamicIslandWindow: NSPanel {
                 onPointerScreenChange?(containsPointer)
             }
         }
-        if suppressMouseEvents {
+        if suppressMouseEvents || isHiddenForMissionControl {
             mouseDownInNotch = false
             ignoresMouseEvents = true
             return

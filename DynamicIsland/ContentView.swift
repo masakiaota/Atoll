@@ -403,14 +403,14 @@ struct ContentView: View {
     /// Whether the notch/island should hide off-screen when closed on a non-notch display.
     /// Temporarily reveals the notch when a sneakPeek HUD (volume, brightness, music, etc.) is active.
     private var shouldHideUntilHover: Bool {
-        hideNonNotchUntilHover && isNonNotchScreen && vm.notchState == .closed && !isSneakPeekVisibleOnCurrentScreen
+        hideNonNotchUntilHover && !vm.isRetractedForMenuBar && isNonNotchScreen && vm.notchState == .closed && !isSneakPeekVisibleOnCurrentScreen
     }
 
     /// State that controls the fallback detector used while the notch is hidden off-screen.
     private var hiddenEdgeHoverPollingState: HiddenEdgeHoverPollingState {
         HiddenEdgeHoverPollingState(
             screenName: currentScreenName,
-            hidesUntilHover: hideNonNotchUntilHover,
+            hidesUntilHover: hideNonNotchUntilHover && !vm.isRetractedForMenuBar,
             isNonNotchScreen: isNonNotchScreen,
             isNotchClosed: vm.notchState == .closed,
             isSneakPeekVisible: isSneakPeekVisibleOnCurrentScreen,
@@ -561,7 +561,14 @@ struct ContentView: View {
                 selection: canShowFocusLiveActivity,
                 animateSelectionChanges: vm.notchState == .closed && !vm.isMenuBarExpanded
             ))
-            .background(NotchMouseRegion(shape: resolvedClipShape))
+            .fixedSize(horizontal: vm.isRetractedForMenuBar, vertical: false)
+            .onGeometryChange(for: CGFloat.self) { geometry in geometry.size.width } action: { width in
+                guard vm.physicalNotchFrame == nil, vm.notchState == .closed else { return }
+                vm.updateMenuBarCollisionPresentation(width: width)
+            }
+            .background {
+                if !vm.isRetractedForMenuBar { NotchMouseRegion(shape: resolvedClipShape) }
+            }
             .compositingGroup()
             .shadow(
                 color: ((vm.notchState == .open || isHovering) && Defaults[.enableShadow])
@@ -642,6 +649,8 @@ struct ContentView: View {
                 ? -(vm.closedNotchSize.height + pillTopOffset + currentShadowPadding + 10)
                 : 0
             )
+            .animation(NotchTuckMotion.animation(hiding: shouldHideUntilHover && !isHovering),
+                       value: shouldHideUntilHover && !isHovering)
             .onChange(of: vm.notchState) { _, newState in
                 syncStatsMonitoringState()
 
@@ -746,7 +755,9 @@ struct ContentView: View {
                             height: vm.effectiveClosedNotchHeight,
                             shape: collapsedBlackSurfaceShape
                         )
-                        .background(NotchMouseRegion(shape: collapsedBlackSurfaceShape))
+                        .background {
+                            if !vm.isRetractedForMenuBar { NotchMouseRegion(shape: collapsedBlackSurfaceShape) }
+                        }
                     }
                     .frame(maxWidth: vm.usesLeftSideLayout
                            ? min((dynamicNotchSize.width + (vm.physicalNotchFrame?.width ?? 0)) / 2,
@@ -754,10 +765,32 @@ struct ContentView: View {
                            : .infinity,
                            alignment: vm.usesLeftSideLayout ? .trailing : .center)
                 }
+                // Preserve the ordinary proposal while the native window is only 3pt tall.
+                // Otherwise ViewThatFits would replace the activity with its narrow fallback.
+                .frame(width: vm.isRetractedForMenuBar ? dynamicNotchSize.width : nil,
+                       height: vm.isRetractedForMenuBar ? dynamicNotchSize.height : nil, alignment: .top)
+                .offset(y: vm.isRetractedForMenuBar
+                        ? -(vm.closedNotchSize.height + pillTopOffset + currentShadowPadding + 10) : 0)
+                .allowsHitTesting(!vm.isRetractedForMenuBar)
+                .animation(NotchTuckMotion.animation(hiding: vm.isRetractedForMenuBar), value: vm.isRetractedForMenuBar)
                 .animation(useModernCloseAnimation
                            ? .spring(response: vm.notchState == .open ? 0.42 : 0.45,
                                      dampingFraction: vm.notchState == .open ? 0.8 : 1)
                            : .spring.speed(1.2), value: vm.notchState)
+            }
+            if vm.isRetractedForMenuBar {
+                let shape = AnyShape(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 2,
+                                                           bottomTrailingRadius: 2, topTrailingRadius: 0))
+                AtollCollapsedSurface(width: getClosedNotchSize(screen: currentScreenName).width, height: 3, shape: shape)
+                    .background(NotchMouseRegion(shape: shape))
+                    .contentShape(shape)
+                    .onHover { handleHover($0) }
+                    .onTapGesture {
+                        if Defaults[.enableHaptics] { triggerHapticIfAllowed() }
+                        openNotch()
+                    }
+                    .allowsHitTesting(interactionsEnabled)
+                    .transition(.move(edge: .top))
             }
         }
         .frame(
@@ -765,10 +798,13 @@ struct ContentView: View {
             maxHeight: (dynamicNotchSize.height + (vm.notchState == .open ? 12 : 0) + (isDynamicIslandMode ? dynamicIslandTopOffset + dynamicIslandShadowInset * 2 : currentShadowPadding)).rounded(),
             alignment: .top
         )
+        .offset(y: vm.isTuckedForMissionControl ? -(vm.closedNotchSize.height + pillTopOffset + 12) : 0)
+        .opacity(vm.isTuckedForMissionControl ? 0 : 1)
+        .animation(NotchTuckMotion.animation(hiding: vm.isTuckedForMissionControl), value: vm.isTuckedForMissionControl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environmentObject(privacyManager)
         .background {
-            if !vm.isMenuBarExpanded { dragDetector }
+            if !vm.isMenuBarExpanded && !vm.isRetractedForMenuBar { dragDetector }
         }
         .environmentObject(vm)
         .environmentObject(webcamManager)
@@ -780,9 +816,25 @@ struct ContentView: View {
         )
     }
 
+    private func syncMenuBarCollisionPresentation() {
+        guard vm.physicalNotchFrame == nil else { return }
+        vm.updateMenuBarCollisionPresentation(width: vm.menuBarCollisionWidth)
+    }
+
     private func installPrimaryRootLifecycleHandlers<Content: View>(on view: Content) -> some View {
         view
+            .onChange(of: isSneakPeekVisibleOnCurrentScreen || isCurrentScreenExpansionVisible) { _, _ in syncMenuBarCollisionPresentation() }
+            .onChange(of: vm.isRetractedForMenuBar) { _, retracted in
+                if retracted {
+                    handleHover(false)
+                    cancelMusicControlWindowSync()
+                    hideMusicControlWindow()
+                } else {
+                    enqueueMusicControlWindowSync(forceRefresh: true)
+                }
+            }
             .onAppear {
+                syncMenuBarCollisionPresentation()
                 syncStatsMonitoringState()
                 syncStickyTerminalOutsideClickMonitor()
                 isMusicControlWindowSuppressed = vm.notchState != .closed
@@ -2581,7 +2633,7 @@ struct ContentView: View {
     }
 
     private func shouldShowMusicControlWindow() -> Bool {
-        guard !vm.isMenuBarExpanded, musicControlWindowEnabled,
+        guard !vm.isMenuBarExpanded, !vm.isRetractedForMenuBar, musicControlWindowEnabled,
               coordinator.musicLiveActivityEnabled,
               standardMediaControlsActive,
               vm.notchState == .closed,

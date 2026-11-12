@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 // Only unrelated services are fixtures. The runner inserts the production
 // AppDelegate methods and dictionaries, and compiles the real window class.
@@ -21,6 +22,7 @@ final class DynamicIslandViewModel {
     var notchState = State.closed
     var notchSize = CGSize(width: 690, height: 498)
     var isMenuBarExpanded = false
+    var isRetractedForMenuBar = false
     var onViewTeardown: (() -> Void)?
     var destroyed = false
     init(screen: String? = nil) { self.screen = screen }
@@ -40,6 +42,15 @@ final class ScreenCaptureVisibilityManager {
     enum Scope { case entireInterface }
     func register(_ window: NSWindow, scope: Scope) {}
     func unregister(_ window: NSWindow) {}
+}
+
+// The Mission Control sensor needs a running window server session; these
+// tests only need the window to fall back to its default (untrusted) behavior.
+@MainActor
+final class MissionControlProbe {
+    static let shared = MissionControlProbe()
+    let isReliable = false
+    let isMissionControlActive = false
 }
 
 @MainActor

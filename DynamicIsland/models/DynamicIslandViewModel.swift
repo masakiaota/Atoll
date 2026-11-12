@@ -33,6 +33,205 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     @Published private(set) var isMenuBarExpanded = false
     @Published private(set) var availableLeftWidth: CGFloat? = nil
 
+    /// Set while Mission Control is showing; the content tucks up out of sight.
+    @Published var isTuckedForMissionControl = false
+    @Published private(set) var isMenuBarColliding = false
+    @Published private(set) var isRetractedForMenuBar = false
+    private var collisionWidth: CGFloat?
+    /// True once the tuck-away motion has finished and the window is the 3pt line.
+    private(set) var usesMenuBarLineWindow = false
+    private var lastCollisionNotchState: NotchState = .closed
+    private var closingSettlesAt = Date.distantPast
+    var menuBarCollisionWidth: CGFloat { collisionWidth ?? closedNotchSize.width }
+    private var lastCollisionLogState: String?
+    private static let collisionLogQueue = DispatchQueue(label: "dev.atoll.menu-bar-collision-log")
+
+    /// While retracted the window is only a 3pt line, so the pointer is polled
+    /// instead: pushing it against the top edge brings the notch back down, and
+    /// it stays down (overlapping menu bar items) until the pointer leaves it.
+    private var menuBarHoverReveal = false
+    private var menuBarHoverRevealTimer: Timer?
+    private var menuBarHoverLeftAt: Date?
+    private var menuBarHoverInsideSince: Date?
+
+    private func syncMenuBarHoverRevealTimer() {
+        let needed = isMenuBarColliding || menuBarHoverReveal
+        if needed, menuBarHoverRevealTimer == nil {
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pollMenuBarHoverReveal() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            menuBarHoverRevealTimer = timer
+        } else if !needed, let timer = menuBarHoverRevealTimer {
+            timer.invalidate()
+            menuBarHoverRevealTimer = nil
+            menuBarHoverLeftAt = nil
+        }
+    }
+
+    private func pollMenuBarHoverReveal() {
+        // The lock screen closes the notch itself, and Mission Control tucks it
+        // away; never reveal or reopen it in either.
+        guard !LockScreenManager.shared.isLocked, !isTuckedForMissionControl else {
+            menuBarHoverInsideSince = nil
+            return
+        }
+        guard let display = NSScreen.screens.first(where: { $0.localizedName == screen }) ?? NSScreen.main else { return }
+        let location = NSEvent.mouseLocation
+        let width = collisionWidth ?? getClosedNotchSize(screen: display.localizedName).width
+        let height = closedNotchSize.height
+        if !menuBarHoverReveal {
+            let edge = CGRect(x: display.frame.midX - width / 2 - 8, y: display.frame.maxY - 8, width: width + 16, height: 10)
+            guard isMenuBarColliding, notchState == .closed, edge.contains(location) else { return }
+            menuBarHoverReveal = true
+            menuBarHoverLeftAt = nil
+            menuBarHoverInsideSince = nil
+            updateMenuBarCollision()
+            return
+        }
+        let hold = CGRect(x: display.frame.midX - width / 2 - 12, y: display.frame.maxY - height - 10,
+                          width: width + 24, height: height + 12)
+        if notchState != .closed || hold.contains(location) {
+            menuBarHoverLeftAt = nil
+            // The view's own hover tracking may miss a pointer that was already
+            // inside when the window grew back, so honor hover-to-open here too.
+            let sneak = coordinator.sneakPeek
+            let sneakVisible = sneak.show && (!Defaults[.showOnAllDisplays]
+                || sneak.targetScreenName == nil || sneak.targetScreenName == (screen ?? coordinator.selectedScreen))
+            if sneakVisible {
+                // Same rule as ContentView.handleHover: a HUD is not interrupted by hover-open.
+                if menuBarHoverInsideSince != .distantFuture { menuBarHoverInsideSince = nil }
+            } else if notchState == .closed, Defaults[.openNotchOnHover], !coordinator.isHoverOpenSuppressed {
+                let since = menuBarHoverInsideSince ?? Date()
+                menuBarHoverInsideSince = since
+                if Date().timeIntervalSince(since) >= max(Defaults[.minimumHoverDuration], 0.2) {
+                    menuBarHoverInsideSince = .distantFuture // once per reveal
+                    open()
+                }
+            }
+        } else if let left = menuBarHoverLeftAt {
+            guard Date().timeIntervalSince(left) > 0.35 else { return }
+            menuBarHoverReveal = false
+            menuBarHoverLeftAt = nil
+            updateMenuBarCollision()
+        } else {
+            menuBarHoverLeftAt = Date()
+        }
+    }
+
+    func updateMenuBarCollisionPresentation(width: CGFloat) {
+        if notchState == .closed { collisionWidth = width }
+        updateMenuBarCollision()
+    }
+
+    private func updateMenuBarCollision() {
+        guard !AppRuntimeEnvironment.isUITesting,
+              let display = NSScreen.screens.first(where: { $0.localizedName == screen }) ?? NSScreen.main else { return }
+        guard display.physicalNotchFrame == nil else {
+            if isRetractedForMenuBar || usesMenuBarLineWindow {
+                isRetractedForMenuBar = false
+                usesMenuBarLineWindow = false
+                AppDelegate.shared?.refreshMenuBarPresentation()
+            }
+            if isMenuBarColliding { isMenuBarColliding = false }
+            collisionWidth = nil
+            menuBarHoverReveal = false
+            syncMenuBarHoverRevealTimer()
+            return
+        }
+        // Match ContentView's screen-specific sneakPeek and expandingView predicates.
+        // This also runs while an inactive display uses its lightweight placeholder.
+        let currentScreen = screen ?? coordinator.selectedScreen
+        let sneak = coordinator.sneakPeek
+        let sneakVisible = sneak.show && (!Defaults[.showOnAllDisplays]
+            || sneak.targetScreenName == nil || sneak.targetScreenName == currentScreen)
+        var expansionVisible = coordinator.expandingView.show
+        if coordinator.expandingView.type == .battery {
+            let battery = BatteryStatusViewModel.shared
+            expansionVisible = expansionVisible && Defaults[.showPowerStatusNotifications]
+                && battery.activeTemporaryHUDKind != nil
+                && (Defaults[.showOnAllDisplays] || battery.activeTemporaryHUDTargetScreenName == nil
+                    || battery.activeTemporaryHUDTargetScreenName == currentScreen)
+        }
+        let collisionTemporaryReveal = sneakVisible || expansionVisible
+        let enabled = Defaults[.retractVirtualNotchOnMenuBarCollision]
+        let snapshot = MenuBarOverflowMonitor.shared.collisionSnapshots[display.localizedName]
+        let width = collisionWidth ?? getClosedNotchSize(screen: display.localizedName).width
+        let notch = CGRect(x: display.frame.midX - width / 2, y: display.frame.maxY - closedNotchSize.height,
+                           width: width, height: closedNotchSize.height)
+        if !enabled {
+            if isMenuBarColliding { isMenuBarColliding = false }
+        } else if let snapshot {
+            let collision = MenuBarCollision.shouldRetract(
+                items: snapshot.menuFrames + snapshot.iconFrames, notch: notch, currentlyRetracted: isMenuBarColliding)
+            if isMenuBarColliding != collision { isMenuBarColliding = collision }
+        }
+        if !isMenuBarColliding { menuBarHoverReveal = false }
+        syncMenuBarHoverRevealTimer()
+        // A notch hidden for fullscreen stays fully hidden; do not leave the line behind.
+        var retract = isMenuBarColliding && notchState == .closed && !hideOnClosed
+            && !collisionTemporaryReveal && !menuBarHoverReveal
+        // Let an open notch finish closing before it tucks away, so the two
+        // motions read as one sequence instead of fighting each other.
+        if notchState != lastCollisionNotchState {
+            if notchState == .closed, lastCollisionNotchState == .open {
+                closingSettlesAt = Date().addingTimeInterval(0.34)
+            }
+            lastCollisionNotchState = notchState
+        }
+        if retract, !isRetractedForMenuBar {
+            let remaining = closingSettlesAt.timeIntervalSinceNow
+            if remaining > 0 {
+                retract = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + remaining + 0.01) { [weak self] in
+                    self?.updateMenuBarCollision()
+                }
+            }
+        }
+        let changed = isRetractedForMenuBar != retract
+        if changed {
+            if retract {
+                // Slide up first; shrink the window to the line only once the
+                // notch is out of sight, so the window never clips the motion.
+                withAnimation(NotchTuckMotion.animation(hiding: true)) { isRetractedForMenuBar = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + NotchTuckMotion.hideDuration + 0.02) { [weak self] in
+                    guard let self, self.isRetractedForMenuBar, !self.usesMenuBarLineWindow else { return }
+                    self.usesMenuBarLineWindow = true
+                    AppDelegate.shared?.refreshMenuBarPresentation()
+                }
+            } else {
+                // Give the notch its full window back before it slides down.
+                usesMenuBarLineWindow = false
+                AppDelegate.shared?.refreshMenuBarPresentation()
+                withAnimation(NotchTuckMotion.animation(hiding: false)) { isRetractedForMenuBar = false }
+            }
+        }
+        let logState = "\(isMenuBarColliding),\(retract),\(collisionTemporaryReveal),\(menuBarHoverReveal),\(snapshot?.isActiveScreen.description ?? "unknown")"
+        if snapshot != nil, lastCollisionLogState != logState, UserDefaults.standard.bool(forKey: "menuBarCollisionDebugLog") {
+            lastCollisionLogState = logState
+            let overlapping = (snapshot?.menuFrames ?? []) + (snapshot?.iconFrames ?? [])
+            var ranges: [String] = []
+            let left = notch.minX - 4
+            let right = notch.maxX + 4
+            for item in overlapping where item.maxX > left && item.minX < right {
+                ranges.append("\(item.minX)...\(item.maxX)")
+            }
+            let overlap = ranges.joined(separator: ",")
+            let menu = snapshot?.menuFrames.map(\.maxX).max().map { String(describing: $0) } ?? "unknown"
+            let icons = snapshot?.iconFrames.map(\.minX).min().map { String(describing: $0) } ?? "unknown"
+            let line = "\(Date().ISO8601Format()) screen=\(display.localizedName) notch=\(notch.minX)...\(notch.maxX) menuRight=\(menu) iconLeft=\(icons) overlaps=\(overlap) retracted=\(retract) temporary=\(collisionTemporaryReveal) hover=\(menuBarHoverReveal) active=\(snapshot?.isActiveScreen.description ?? "unknown")\n"
+            Self.collisionLogQueue.async {
+                let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Atoll-menu-bar-collision.log")
+                try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+                guard let handle = try? FileHandle(forWritingTo: url) else { return }
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: Data(line.utf8))
+            }
+        }
+    }
+
     var physicalNotchFrame: CGRect? {
         (NSScreen.screens.first { $0.localizedName == screen } ?? NSScreen.main)?.physicalNotchFrame
     }
@@ -132,6 +331,9 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     func destroy() {
         onViewTeardown?()
         onViewTeardown = nil
+        // The run loop retains the timer; release it with the view model.
+        menuBarHoverRevealTimer?.invalidate()
+        menuBarHoverRevealTimer = nil
         cancellables.forEach { $0.cancel() }
         cancellables.removeAll()
     }
@@ -146,6 +348,21 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         closedNotchSize = notchSize
 
         let menuBar = MenuBarOverflowMonitor.shared
+        coordinator.$sneakPeek.combineLatest(coordinator.$expandingView)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard self?.physicalNotchFrame == nil else { return }
+                self?.updateMenuBarCollision()
+            }
+            .store(in: &cancellables)
+        menuBar.$collisionSnapshots.combineLatest($screen, $notchState, $hideOnClosed)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateMenuBarCollision() }
+            .store(in: &cancellables)
+        Defaults.publisher(.retractVirtualNotchOnMenuBarCollision)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateMenuBarCollision() }
+            .store(in: &cancellables)
         menuBar.$expandedScreens.combineLatest($screen)
             .receive(on: RunLoop.main)
             .sink { [weak self] expanded, screenName in
@@ -349,7 +566,7 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] shouldHide in
-                withAnimation(.smooth) {
+                withAnimation(NotchTuckMotion.animation(hiding: shouldHide)) {
                     self?.hideOnClosed = shouldHide
                 }
             }
@@ -368,6 +585,10 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
         let screenFrame = getScreenFrame(screen)
         if let frame = screenFrame {
             
+            if isRetractedForMenuBar {
+                let width = getClosedNotchSize(screen: screen).width
+                return CGRect(x: frame.midX - width / 2, y: frame.maxY - 3, width: width, height: 3).contains(position)
+            }
             let baseY = frame.maxY - notchSize.height
             let baseX = frame.midX - notchSize.width / 2
             
@@ -390,6 +611,10 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
             )
         }
 
+        if isRetractedForMenuBar {
+            notchState = .open
+            updateMenuBarCollision()
+        }
         if Thread.isMainThread {
             applyWindowResize()
         } else {

@@ -1394,5 +1394,6 @@ extension Defaults.Keys {
         let fallback = MusicAuxiliaryControl.alternative(excluding: current)
         Defaults[.musicAuxRightControl] = fallback
     }
+    static let retractVirtualNotchOnMenuBarCollision = Key<Bool>("retractVirtualNotchOnMenuBarCollision", default: true)
     static let showSongMetadataInClosedNotch = Key<Bool>("showSongMetadataInClosedNotch", default: false)
 }

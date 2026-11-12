@@ -571,6 +571,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// and the user has chosen the Dynamic Island style.
     private func adjustedSizeForScreen(_ baseSize: CGSize, screen: NSScreen) -> CGSize {
         let model = viewModels[screen.displayID] ?? vm
+        if screen.physicalNotchFrame == nil, model.usesMenuBarLineWindow {
+            return CGSize(width: getClosedNotchSize(screen: screen.localizedName).width, height: 3)
+        }
         if let physical = screen.physicalNotchFrame {
             if model.isMenuBarExpanded { return physical.size }
             return baseSize
@@ -611,6 +614,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Mission Control: every notch tucks away with the shared motion.
+    func setTuckedForMissionControl(_ tucked: Bool) {
+        for model in Set(Array(viewModels.values) + [vm]) where model.isTuckedForMissionControl != tucked {
+            withAnimation(NotchTuckMotion.animation(hiding: tucked)) { model.isTuckedForMissionControl = tucked }
+        }
+    }
+
     func refreshMenuBarPresentation() {
         windowSizeUpdateWorkItem?.cancel()
         resizeWindows(to: calculateRequiredNotchSize(), animated: false, force: true)
@@ -632,6 +642,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let newY = (screenFrame.origin.y + screenFrame.height - clampedHeight).rounded()
         let targetFrame = NSRect(x: newX, y: newY, width: clampedWidth, height: clampedHeight)
 
+        // The tuck motion is drawn by the content; the window only changes
+        // size while the notch is out of sight, so it is never animated here.
         window.setFrame(targetFrame, display: true)
     }
 
@@ -664,6 +676,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MissionControlProbe.shared.start()
         if AppRuntimeEnvironment.forcesSingleDisplayForUITesting || AppRuntimeEnvironment.forcesAllDisplaysForUITesting {
             // Defaults decodes Bool objects, not the strings supplied by `-key
             // YES`. Use typed, process-local overrides without persisting them.
