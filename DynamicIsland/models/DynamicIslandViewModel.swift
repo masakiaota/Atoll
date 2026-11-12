@@ -70,8 +70,12 @@ class DynamicIslandViewModel: NSObject, ObservableObject {
     }
 
     private func pollMenuBarHoverReveal() {
-        // The lock screen closes the notch itself; never reveal or reopen it there.
-        guard !LockScreenManager.shared.isLocked else { return }
+        // The lock screen closes the notch itself, and Mission Control tucks it
+        // away; never reveal or reopen it in either.
+        guard !LockScreenManager.shared.isLocked, !isTuckedForMissionControl else {
+            menuBarHoverInsideSince = nil
+            return
+        }
         guard let display = NSScreen.screens.first(where: { $0.localizedName == screen }) ?? NSScreen.main else { return }
         let location = NSEvent.mouseLocation
         let width = collisionWidth ?? getClosedNotchSize(screen: display.localizedName).width
