@@ -44,6 +44,15 @@ final class ScreenCaptureVisibilityManager {
     func unregister(_ window: NSWindow) {}
 }
 
+// The Mission Control sensor needs a running window server session; these
+// tests only need the window to fall back to its default (untrusted) behavior.
+@MainActor
+final class MissionControlProbe {
+    static let shared = MissionControlProbe()
+    let isReliable = false
+    let isMissionControlActive = false
+}
+
 @MainActor
 final class NotchSpaceManager {
     static let shared = NotchSpaceManager()

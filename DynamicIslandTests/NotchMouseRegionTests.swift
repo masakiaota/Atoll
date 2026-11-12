@@ -10,6 +10,15 @@ final class ScreenCaptureVisibilityManager {
     func register(_ window: NSWindow, scope: Scope) {}
 }
 
+// The Mission Control sensor needs a running window server session; these
+// tests only need the window to fall back to its default (untrusted) behavior.
+@MainActor
+final class MissionControlProbe {
+    static let shared = MissionControlProbe()
+    let isReliable = false
+    let isMissionControlActive = false
+}
+
 @main
 @MainActor
 private struct NotchMouseRegionTests {
