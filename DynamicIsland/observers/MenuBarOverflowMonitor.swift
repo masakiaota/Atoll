@@ -101,6 +101,11 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
     private var buttons: [AXUIElement] = []
     private var lastDiscovery = Date.distantPast
     private var lastExpanded: Set<String> = []
+    private var lastWidths: [String: CGFloat] = [:]
+    /// AX requests that resolve to this process are served synchronously on the calling
+    /// thread, which runs AppKit/SwiftUI hit testing off the main thread and traps.
+    /// Every AX request here must therefore target another process explicitly.
+    private let ownPID = getpid()
     private let labels: (show: Set<String>, hide: Set<String>) = {
         var show: Set<String> = ["Show Hidden Menu Bar Items", "非表示のメニューバー項目を表示"]
         var hide: Set<String> = ["Hide Menu Bar Items", "メニューバー項目を非表示"]
@@ -117,8 +122,9 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
         return (show, hide)
     }()
 
-    func refresh(screens: [Display], collisionScreens: [Display], frontPID: pid_t?, rediscover: Bool) {
+    func refresh(screens: [Display], collisionScreens: [Display], frontPID rawFrontPID: pid_t?, rediscover: Bool) {
         queue.async { [self] in
+            let frontPID = rawFrontPID == ownPID ? nil : rawFrontPID
             guard AXIsProcessTrusted(), !screens.isEmpty || !collisionScreens.isEmpty else {
                 disconnect()
                 didChange?([], [:])
@@ -136,8 +142,10 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
             if !screens.isEmpty && (reconnect || rediscover || buttons.isEmpty || Date().timeIntervalSince(lastDiscovery) > 5) {
                 discoverButtons()
             }
-            let system = AXUIElementCreateSystemWide()
-            AXUIElementSetMessagingTimeout(system, 0.1)
+            // Hit-test inside MenuBarAgent only. A system-wide hit test resolves to whichever
+            // app owns the window at the point, including this app's open notch.
+            let agent = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(agent, 0.1)
             var expanded = lastExpanded.intersection(Set(screens.map(\.name)))
             var candidateScreens: Set<String> = []
             var sampledPositions: Set<String> = []
@@ -148,7 +156,7 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
                 let key = "\(rect.midX),\(rect.midY)"
                 guard sampledPositions.insert(key).inserted else { continue }
                 var hit: AXUIElement?
-                guard AXUIElementCopyElementAtPosition(system, Float(rect.midX), Float(rect.midY), &hit) == .success,
+                guard AXUIElementCopyElementAtPosition(agent, Float(rect.midX), Float(rect.midY), &hit) == .success,
                       let hit, elementPID(hit) == pid,
                       string(hit, kAXRoleAttribute) == kAXButtonRole else { continue }
                 // Use the actual hit element. Never combine the states of inactive menu bars.
@@ -164,7 +172,11 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
                     didReadCollisions?(snapshots)
                 }
             }
-            let widths = screens.isEmpty ? [:] : availableWidths(screens: screens, frontPID: frontPID)
+            // While this app is frontmost, keep the widths read from the previous front app.
+            let widths = screens.isEmpty ? [:]
+                : rawFrontPID == ownPID ? lastWidths
+                : availableWidths(screens: screens, frontPID: frontPID)
+            lastWidths = widths
             lastExpanded = expanded
             didChange?(expanded, widths)
         }
@@ -309,13 +321,12 @@ private final class MenuBarOverflowReader: @unchecked Sendable {
         }
         for (index, child) in roots.enumerated() { visit(child, depth: 0, tree: index) }
         guard !failed else { return nil }
-        let system = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(system, 0.05)
+        AXUIElementSetMessagingTimeout(root, 0.05)
         var snapshots: [String: MenuBarCollisionSnapshot] = [:]
         for screen in screens {
             var selected: Int?
             var hit: AXUIElement?
-            if AXUIElementCopyElementAtPosition(system, Float(screen.frame.maxX - 30), Float(screen.frame.midY), &hit) == .success {
+            if AXUIElementCopyElementAtPosition(root, Float(screen.frame.maxX - 30), Float(screen.frame.midY), &hit) == .success {
                 for _ in 0..<6 {
                     guard let element = hit else { break }
                     if let index = roots.firstIndex(where: { CFEqual($0, element) }),
